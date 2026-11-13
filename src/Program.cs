@@ -739,9 +739,31 @@ namespace SpicetifyUpdater
     {
         public static ImageSource Load()
         {
+            var exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+
+            // A 64px PNG is embedded in the assembly, so the title bar, taskbar and
+            // Alt-Tab all scale down from a sharp frame instead of a 32px one.
             try
             {
-                var exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                var resource = Application.GetResourceStream(new Uri("pack://application:,,,/build/icon64.png"));
+                if (resource != null)
+                {
+                    using (var stream = resource.Stream)
+                    {
+                        var frame = BitmapFrame.Create(
+                            stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                        frame.Freeze();
+                        return frame;
+                    }
+                }
+            }
+            catch
+            {
+                // fall through to the exe icon
+            }
+
+            try
+            {
                 using (var icon = System.Drawing.Icon.ExtractAssociatedIcon(exe))
                 using (var stream = new MemoryStream())
                 {

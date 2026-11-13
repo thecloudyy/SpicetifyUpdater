@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <Compile Include="src\Program.cs" />
+    <Resource Include="build\icon64.png" />
   </ItemGroup>
 
   <ItemGroup>
