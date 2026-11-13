@@ -1,5 +1,7 @@
-node_modules/
+bin/
+obj/
 dist/
+node_modules/
 .freebuff/
 npm-debug.log*
 *.log
