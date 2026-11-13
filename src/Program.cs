@@ -41,6 +41,14 @@ namespace SpicetifyUpdater
                 File.WriteAllText(trace, "starting\n");
                 var renderApp = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
                 var window = new MainWindow();
+                double renderWidth, renderHeight;
+                if (args.Length >= 4 &&
+                    double.TryParse(args[2], out renderWidth) &&
+                    double.TryParse(args[3], out renderHeight))
+                {
+                    window.Width = renderWidth;
+                    window.Height = renderHeight;
+                }
                 window.Show();
                 File.AppendAllText(trace, "shown\n");
                 var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
@@ -51,8 +59,22 @@ namespace SpicetifyUpdater
                     {
                         File.AppendAllText(trace, "tick\n");
                         var root = (FrameworkElement)window.Content;
+                        window.UpdateLayout();
                         root.UpdateLayout();
-                        File.AppendAllText(trace, string.Format("layout {0}x{1}\n", root.ActualWidth, root.ActualHeight));
+                        var pageElement = (FrameworkElement)((Grid)root).Children[0];
+                        var footerElement = (FrameworkElement)((Grid)pageElement).Children[4];
+                        File.AppendAllText(trace, string.Format(
+                            "window {0}x{1} root {2}x{3} page {4}x{5} footerH {6} pageBottom {7}\n",
+                            window.ActualWidth, window.ActualHeight,
+                            root.ActualWidth, root.ActualHeight,
+                            pageElement.ActualWidth, pageElement.ActualHeight,
+                            footerElement.ActualHeight,
+                            pageElement.TranslatePoint(new Point(0, pageElement.ActualHeight), root).Y));
+                        File.AppendAllText(trace, string.Format(
+                            "footer {0}x{1} at ({2},{3})\n",
+                            footerElement.ActualWidth, footerElement.ActualHeight,
+                            footerElement.TranslatePoint(new Point(0, 0), root).X,
+                            footerElement.TranslatePoint(new Point(0, 0), root).Y));
                         var bitmap = new RenderTargetBitmap(
                             Math.Max(1, (int)root.ActualWidth), Math.Max(1, (int)root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
                         bitmap.Render(root);
@@ -370,11 +392,20 @@ namespace SpicetifyUpdater
                 FontSize = 12,
                 Padding = new Thickness(10, 8, 10, 8),
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                MinHeight = 96,
                 IsDocumentEnabled = false
             };
             _log.Document.PagePadding = new Thickness(0);
 
-            var consoleBody = new StackPanel();
+            // A star row lets the log fill whatever height the window gives the card,
+            // instead of leaving dead space under a fixed-height text box.
+            var consoleBody = new Grid();
+            consoleBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            consoleBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            consoleBody.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            Grid.SetRow(consoleHead, 0);
+            Grid.SetRow(_progress, 1);
+            Grid.SetRow(_log, 2);
             consoleBody.Children.Add(consoleHead);
             consoleBody.Children.Add(_progress);
             consoleBody.Children.Add(_log);
@@ -654,6 +685,7 @@ namespace SpicetifyUpdater
                 _cliPrimary.Content = "Install CLI";
                 _cliPrimary.Tag = "install-cli";
                 _cliPrimary.IsEnabled = !_busy;
+                _cliPrimary.Visibility = Visibility.Visible;
                 _cliSecondary.Visibility = Visibility.Collapsed;
             }
             else if (status.CliUpdate)
@@ -662,6 +694,7 @@ namespace SpicetifyUpdater
                 _cliPrimary.Content = "Update to " + VersionText(status.CliLatest);
                 _cliPrimary.Tag = "update-cli";
                 _cliPrimary.IsEnabled = !_busy;
+                _cliPrimary.Visibility = Visibility.Visible;
                 _cliSecondary.Visibility = Visibility.Visible;
                 _cliSecondary.IsEnabled = !_busy;
             }
@@ -671,6 +704,7 @@ namespace SpicetifyUpdater
                 _cliPrimary.Content = "Up to date";
                 _cliPrimary.Tag = null;
                 _cliPrimary.IsEnabled = false;
+                _cliPrimary.Visibility = Visibility.Collapsed;
                 _cliSecondary.Visibility = Visibility.Visible;
                 _cliSecondary.IsEnabled = !_busy;
             }
@@ -688,6 +722,7 @@ namespace SpicetifyUpdater
                 _mpPrimary.Content = "Install the CLI first";
                 _mpPrimary.Tag = null;
                 _mpPrimary.IsEnabled = false;
+                _mpPrimary.Visibility = Visibility.Visible;
                 _mpSecondary.Visibility = Visibility.Collapsed;
             }
             else if (!status.MarketplaceInstalled)
@@ -696,6 +731,7 @@ namespace SpicetifyUpdater
                 _mpPrimary.Content = "Install Marketplace";
                 _mpPrimary.Tag = "install-marketplace";
                 _mpPrimary.IsEnabled = !_busy;
+                _mpPrimary.Visibility = Visibility.Visible;
                 _mpSecondary.Visibility = Visibility.Collapsed;
             }
             else if (status.MarketplaceUpdate)
@@ -704,6 +740,7 @@ namespace SpicetifyUpdater
                 _mpPrimary.Content = "Update to " + VersionText(status.MarketplaceLatest);
                 _mpPrimary.Tag = "update-marketplace";
                 _mpPrimary.IsEnabled = !_busy;
+                _mpPrimary.Visibility = Visibility.Visible;
                 _mpSecondary.Visibility = Visibility.Visible;
                 _mpSecondary.IsEnabled = !_busy;
             }
@@ -713,6 +750,7 @@ namespace SpicetifyUpdater
                 _mpPrimary.Content = "Up to date";
                 _mpPrimary.Tag = null;
                 _mpPrimary.IsEnabled = false;
+                _mpPrimary.Visibility = Visibility.Collapsed;
                 _mpSecondary.Visibility = Visibility.Visible;
                 _mpSecondary.IsEnabled = !_busy;
             }
@@ -797,7 +835,7 @@ namespace SpicetifyUpdater
             };
         }
 
-        public static StackPanel CardContent(
+        public static Grid CardContent(
             string glyph,
             string title,
             Border pill,
@@ -862,12 +900,31 @@ namespace SpicetifyUpdater
             buttons.Children.Add(primary);
             buttons.Children.Add(secondary);
 
-            var stack = new StackPanel();
+            buttons.Margin = new Thickness(0, 6, 0, 0);
+
+            // The star spacer above the buttons keeps both cards' action rows on the
+            // same line even though Marketplace carries one extra control.
+            var stack = new Grid();
+            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            stack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            Grid.SetRow(head, 0);
+            Grid.SetRow(metaGrid, 1);
+            Grid.SetRow(path, 2);
+            Grid.SetRow(buttons, 5);
             stack.Children.Add(head);
             stack.Children.Add(metaGrid);
             stack.Children.Add(path);
-            if (check != null) stack.Children.Add(check);
-            buttons.Margin = new Thickness(0, 6, 0, 0);
+            if (check != null)
+            {
+                check.Margin = new Thickness(0, 0, 0, 4);
+                Grid.SetRow(check, 3);
+                stack.Children.Add(check);
+            }
             stack.Children.Add(buttons);
             return stack;
         }
