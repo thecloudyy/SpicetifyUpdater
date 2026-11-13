@@ -234,7 +234,6 @@ namespace SpicetifyUpdater
         private readonly TextBlock _mpPillText;
         private readonly Button _mpPrimary;
         private readonly Button _mpSecondary;
-        private readonly CheckBox _mpTheme;
 
         private readonly CheckBox _closeSpotify;
         private readonly Button _repair;
@@ -335,7 +334,6 @@ namespace SpicetifyUpdater
                 "\u25B8_", "Spicetify CLI", _cliPill,
                 new[] { ("Installed", _cliInstalled), ("Latest release", _cliLatest) },
                 _cliPath,
-                null,
                 _cliPrimary, _cliSecondary));
 
             /* Marketplace card */
@@ -346,7 +344,6 @@ namespace SpicetifyUpdater
             _mpPill = Ui.Pill(_mpPillText);
             _mpPrimary = Ui.MakeButton("Install", true);
             _mpSecondary = Ui.MakeButton("Reinstall", false);
-            _mpTheme = Ui.Check("Set Marketplace as the current theme", true);
             _mpPrimary.Click += async (s, e) => await RunActionAsync(_mpPrimary.Tag as string, true);
             _mpSecondary.Click += async (s, e) => await RunActionAsync("install-marketplace", true);
 
@@ -354,7 +351,6 @@ namespace SpicetifyUpdater
                 "\u25A2", "Marketplace", _mpPill,
                 new[] { ("Installed", _mpInstalled), ("Latest release", _mpLatest) },
                 _mpPath,
-                _mpTheme,
                 _mpPrimary, _mpSecondary));
 
             var cards = new Grid();
@@ -638,7 +634,7 @@ namespace SpicetifyUpdater
                         case "install-marketplace":
                         case "update-marketplace":
                             AppendLog("Starting Marketplace " + (action == "update-marketplace" ? "update" : "install"), "heading");
-                            return Spicetify.InstallMarketplace(Log, Progress, _mpTheme.IsChecked == true);
+                            return Spicetify.InstallMarketplace(Log, Progress);
                         case "repair":
                             AppendLog("Repairing the Spicetify install", "heading");
                             return Spicetify.Repair(Log, Progress);
@@ -916,7 +912,6 @@ namespace SpicetifyUpdater
             Border pill,
             (string Label, TextBlock Value)[] meta,
             TextBlock path,
-            CheckBox check,
             Button primary,
             Button secondary)
         {
@@ -983,23 +978,16 @@ namespace SpicetifyUpdater
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             stack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             Grid.SetRow(head, 0);
             Grid.SetRow(metaGrid, 1);
             Grid.SetRow(path, 2);
-            Grid.SetRow(buttons, 5);
+            Grid.SetRow(buttons, 4);
             stack.Children.Add(head);
             stack.Children.Add(metaGrid);
             stack.Children.Add(path);
-            if (check != null)
-            {
-                check.Margin = new Thickness(0, 0, 0, 4);
-                Grid.SetRow(check, 3);
-                stack.Children.Add(check);
-            }
             stack.Children.Add(buttons);
             return stack;
         }
@@ -1500,7 +1488,7 @@ namespace SpicetifyUpdater
             }
         }
 
-        public static string InstallMarketplace(Action<string> log, Action<double> progress, bool setCurrentTheme)
+        public static string InstallMarketplace(Action<string> log, Action<double> progress)
         {
             var exe = InstalledExe();
             if (exe == null) throw new InvalidOperationException("Install the Spicetify CLI first");
@@ -1547,12 +1535,6 @@ namespace SpicetifyUpdater
                     log("  spicetify config custom_apps marketplace");
                 }
                 RunProcess(exe, "config inject_css 1 replace_colors 1", log, 60000);
-
-                if (setCurrentTheme)
-                {
-                    if (RunProcess(exe, "config current_theme marketplace", log, 60000) == 0)
-                        log("Marketplace theme set as current theme");
-                }
 
                 log("Backing up Spotify and applying changes");
                 RunProcess(exe, "backup", log, 180000);

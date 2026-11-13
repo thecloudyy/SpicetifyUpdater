@@ -30,7 +30,8 @@ you at the setup instead of leaving a half-written file.
 - **Spicetify CLI** — downloads `spicetify-<version>-windows-x64.zip` into `%LOCALAPPDATA%\spicetify`
   and adds that folder to your user `PATH`.
 - **Marketplace** — downloads `marketplace.zip` into `%APPDATA%\spicetify\CustomApps\marketplace`,
-  registers it as a custom app and writes the placeholder theme.
+  registers it as a custom app and writes the placeholder theme. Your current theme setting is left
+  untouched.
 - **Repair** — reinstalls the full CLI package, restores Spotify's original files and re-applies.
   Useful when Spotify won't load after an update.
 - **Close Spotify automatically** — stops the client before patching and reopens it afterwards.
