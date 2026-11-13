@@ -964,7 +964,9 @@ namespace SpicetifyUpdater
             var border = new Border
             {
                 Background = Theme.Frozen("#1E2222"),
-                CornerRadius = new CornerRadius(999),
+                // Half of the ~20px height: WPF draws a far-too-large radius as a
+                // bent lens at the ends instead of a clean pill.
+                CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(8, 3, 8, 3),
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Child = text
@@ -1024,7 +1026,9 @@ namespace SpicetifyUpdater
             };
 
             var border = new FrameworkElementFactory(typeof(Border), "bg");
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(999));
+            // Half of the ~35px button height. Anything much larger (999) makes WPF
+            // bend the stroke into a doubled arc at the left and right ends.
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(17));
             border.SetValue(Border.BorderThicknessProperty, new Thickness(1));
             border.SetValue(Border.BackgroundProperty, primary ? Theme.Accent : Brushes.Transparent);
             border.SetValue(Border.BorderBrushProperty, primary ? Theme.Accent : Theme.Frozen("#343938"));
