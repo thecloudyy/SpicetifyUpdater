@@ -10,13 +10,16 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -117,8 +120,77 @@ namespace SpicetifyUpdater
                 return;
             }
 
-            var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-            app.Run(new MainWindow());
+            // One window per session: a second launch hands the foreground to the
+            // copy that is already running instead of opening another window.
+            bool isFirstInstance;
+            var instanceMutex = new Mutex(true, InstanceMutexName, out isFirstInstance);
+            if (!isFirstInstance)
+            {
+                ActivateRunningInstance();
+                instanceMutex.Dispose();
+                return;
+            }
+
+            try
+            {
+                var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+                var window = new MainWindow();
+                var signal = new EventWaitHandle(false, EventResetMode.AutoReset, InstanceSignalName);
+                ListenForActivation(window, signal);
+                app.Run(window);
+            }
+            finally
+            {
+                instanceMutex.ReleaseMutex();
+                instanceMutex.Dispose();
+            }
+        }
+
+        private const string InstanceMutexName = "Local\\SpicetifyUpdater.SingleInstance";
+        private const string InstanceSignalName = "Local\\SpicetifyUpdater.Activate";
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr handle);
+
+        [DllImport("user32.dll")]
+        private static extern bool AllowSetForegroundWindow(int processId);
+
+        private static void ActivateRunningInstance()
+        {
+            try
+            {
+                // Windows only grants the foreground to a process that just received
+                // input, so pass that right on to the instance we are waking up.
+                AllowSetForegroundWindow(-1);
+                using (var signal = EventWaitHandle.OpenExisting(InstanceSignalName))
+                    signal.Set();
+            }
+            catch
+            {
+                // The running copy is still starting up or the event is unavailable;
+                // there is nothing to focus, so just exit quietly.
+            }
+        }
+
+        private static void ListenForActivation(Window window, EventWaitHandle signal)
+        {
+            var listener = new Thread(() =>
+            {
+                while (true)
+                {
+                    signal.WaitOne();
+                    window.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (window.WindowState == WindowState.Minimized)
+                            window.WindowState = WindowState.Normal;
+                        window.Show();
+                        window.Activate();
+                        SetForegroundWindow(new WindowInteropHelper(window).Handle);
+                    }));
+                }
+            });
+            listener.IsBackground = true;
+            listener.Start();
         }
     }
 
