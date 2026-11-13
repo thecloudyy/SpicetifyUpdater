@@ -8,11 +8,21 @@ downloads the correct build — no terminal needed.
 
 ## Install
 
-Download `Spicetify-Updater-2.0.0.exe` from the [latest release](../../releases/latest) and run it.
+Two ways, both from the [latest release](../../releases/latest):
 
-- **57 KB** single executable, no installer
-- Native WPF window — no Electron, no bundled browser, no Node.js
-- Needs only .NET Framework 4.8, which ships with Windows 10 and 11
+- **`Spicetify-Updater-Setup-<version>.exe`** — Inno Setup installer. Adds Start-menu and optional
+  desktop shortcuts, registers an uninstaller, and installs per-user so no admin prompt appears.
+- **`Spicetify-Updater-<version>.exe`** — the same app as a standalone portable exe, ~60 KB.
+
+Either way it is a native WPF window: no Electron, no bundled browser, no Node.js, and it needs only
+.NET Framework 4.8, which ships with Windows 10 and 11.
+
+## Updating the app itself
+
+The app checks its own GitHub releases on launch and shows `Updater v2.1.0 · v2.2.0 available` in the
+footer with an **Update to v2.2.0** button. It downloads the new exe, swaps it in after exiting and
+relaunches — no installer needed. If it lives in a folder it cannot write to, it says so and points
+you at the setup instead of leaving a half-written file.
 
 ## What it does
 
@@ -39,6 +49,15 @@ dotnet build SpicetifyUpdater.csproj -c Release
 
 The executable lands in `bin\Release\Spicetify-Updater.exe`.
 
+To build the installer, install [Inno Setup 6](https://jrsoftware.org/isdl.php) and compile
+`installer.iss` (bump `MyAppVersion` there and `<Version>` in the csproj together):
+
+```bash
+iscc installer.iss
+```
+
+That writes `dist\Spicetify-Updater-Setup-<version>.exe`.
+
 To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with a PNG payload.
 
 ## Layout
@@ -48,8 +67,8 @@ To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with 
 - `SpicetifyUpdater.csproj` — `net48`, `WinExe`
 - `build/` — app icon
 
-There is also a `--selftest <path>` switch that writes the detected status as JSON and exits, useful
-for checking the detection logic without opening a window.
+Two switches help without opening a window: `--selftest <path>` writes the detected status as JSON,
+and `--selfupdate [logpath]` performs the app self-update and exits.
 
 An earlier Electron-based version of this app is still in the git history.
 

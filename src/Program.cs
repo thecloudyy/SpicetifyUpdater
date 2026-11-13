@@ -33,6 +33,27 @@ namespace SpicetifyUpdater
                 return;
             }
 
+            // Headless self-update, used to verify the swap without opening a window.
+            if (args.Length >= 1 && args[0] == "--selfupdate")
+            {
+                var logPath = args.Length >= 2
+                    ? args[1]
+                    : Path.Combine(Path.GetTempPath(), "spicetify-updater-selfupdate.log");
+                Action<string> write = line => File.AppendAllText(logPath, line + Environment.NewLine);
+                try
+                {
+                    write("current " + Spicetify.SelfVersion());
+                    var tag = Spicetify.UpdateSelf(write, ratio => { });
+                    write("OK " + tag);
+                }
+                catch (Exception ex)
+                {
+                    write("ERR " + ex.Message);
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
             app.Run(new MainWindow());
         }
@@ -324,10 +345,37 @@ namespace SpicetifyUpdater
                 Text = "checking…",
                 FontSize = 11,
                 Foreground = Theme.Frozen("#5F6665"),
-                Margin = new Thickness(2, 14, 0, 0),
-                FontFamily = new FontFamily("Cascadia Mono, Consolas")
+                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+                VerticalAlignment = VerticalAlignment.Center
             };
             _envLabel = env;
+
+            _selfLabel = new TextBlock
+            {
+                Text = "Updater v" + Spicetify.SelfVersion(),
+                FontSize = 11,
+                Foreground = Theme.Frozen("#5F6665"),
+                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0)
+            };
+
+            _selfButton = Ui.MakeButton("Update app", true);
+            _selfButton.Padding = new Thickness(12, 4, 12, 4);
+            _selfButton.FontSize = 11.5;
+            _selfButton.Visibility = Visibility.Collapsed;
+            _selfButton.Click += async (s, e) => await RunActionAsync("update-self", false);
+
+            var footer = new Grid { Margin = new Thickness(2, 14, 0, 0) };
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var selfPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            selfPanel.Children.Add(_selfLabel);
+            selfPanel.Children.Add(_selfButton);
+            Grid.SetColumn(env, 0);
+            Grid.SetColumn(selfPanel, 1);
+            footer.Children.Add(env);
+            footer.Children.Add(selfPanel);
 
             /* root */
             var root = new Grid { Margin = new Thickness(26, 26, 26, 22) };
@@ -341,12 +389,12 @@ namespace SpicetifyUpdater
             Grid.SetRow(cards, 1);
             Grid.SetRow(toolsCard, 2);
             Grid.SetRow(consoleCard, 3);
-            Grid.SetRow(env, 4);
+            Grid.SetRow(footer, 4);
             root.Children.Add(header);
             root.Children.Add(cards);
             root.Children.Add(toolsCard);
             root.Children.Add(consoleCard);
-            root.Children.Add(env);
+            root.Children.Add(footer);
 
             Content = root;
 
@@ -355,6 +403,8 @@ namespace SpicetifyUpdater
         }
 
         private readonly TextBlock _envLabel;
+        private readonly TextBlock _selfLabel;
+        private readonly Button _selfButton;
 
         /* ------------------------------------------------------------- logging */
 
@@ -389,7 +439,7 @@ namespace SpicetifyUpdater
         private void SetBusy(bool busy, string label = "Working…")
         {
             _busy = busy;
-            foreach (var button in new[] { _cliPrimary, _cliSecondary, _mpPrimary, _mpSecondary, _repair, _backupApply, _apply, _restore })
+            foreach (var button in new[] { _cliPrimary, _cliSecondary, _mpPrimary, _mpSecondary, _repair, _backupApply, _apply, _restore, _selfButton })
                 button.IsEnabled = !busy;
 
             _state.Text = busy ? label.ToUpperInvariant() : "IDLE";
@@ -454,6 +504,9 @@ namespace SpicetifyUpdater
                         case "restore":
                             AppendLog("Running spicetify restore", "heading");
                             return Spicetify.RunCommand(new[] { "restore" }, Log, false);
+                        case "update-self":
+                            AppendLog("Updating Spicetify Updater itself", "heading");
+                            return Spicetify.UpdateSelf(Log, Progress);
                         default:
                             throw new InvalidOperationException("Unknown action: " + action);
                     }
@@ -483,6 +536,11 @@ namespace SpicetifyUpdater
             else
             {
                 AppendLog("Done", "success");
+                if (action == "update-self")
+                {
+                    Application.Current.Shutdown();
+                    return;
+                }
             }
 
             SetBusy(false);
@@ -619,6 +677,13 @@ namespace SpicetifyUpdater
             var spotify = status.SpotifyFound ? "Spotify found" : "Spotify not detected";
             var onPath = status.OnPath ? "on PATH" : "not on PATH";
             _envLabel.Text = string.Format("{0}-{1} · {2} · {3}", status.Platform, status.Arch, spotify, onPath);
+
+            var selfText = "Updater v" + (status.SelfVersion ?? "?");
+            if (!string.IsNullOrEmpty(status.SelfLatest))
+                selfText += status.SelfUpdate ? " · v" + status.SelfLatest + " available" : " · up to date";
+            _selfLabel.Text = selfText;
+            _selfButton.Visibility = status.SelfUpdate ? Visibility.Visible : Visibility.Collapsed;
+            if (status.SelfUpdate) _selfButton.Content = "Update to v" + status.SelfLatest;
 
             if (!string.IsNullOrEmpty(status.ReleaseError))
                 AppendLog("GitHub check failed: " + status.ReleaseError, "error");
@@ -906,12 +971,17 @@ namespace SpicetifyUpdater
         public string Platform;
         public string Arch;
         public string ReleaseError;
+
+        public string SelfVersion;
+        public string SelfLatest;
+        public bool SelfUpdate;
     }
 
     internal static class Spicetify
     {
         private const string CliRepo = "spicetify/cli";
         private const string MarketRepo = "spicetify/marketplace";
+        private const string SelfRepo = "thecloudyy/SpicetifyUpdater";
         private const string ColorsUrl = "https://raw.githubusercontent.com/spicetify/marketplace/main/resources/color.ini";
         private const string UserAgent = "SpicetifyUpdater/2.0 (+https://spicetify.app)";
 
@@ -1037,7 +1107,25 @@ namespace SpicetifyUpdater
                 if (status.ReleaseError == null) status.ReleaseError = ex.Message;
             }
 
+            status.SelfVersion = SelfVersion();
+            try
+            {
+                var self = LatestRelease(SelfRepo, force);
+                status.SelfLatest = self.Tag;
+                status.SelfUpdate = Compare(status.SelfLatest, status.SelfVersion) > 0;
+            }
+            catch (Exception ex)
+            {
+                if (status.ReleaseError == null) status.ReleaseError = ex.Message;
+            }
+
             return status;
+        }
+
+        public static string SelfVersion()
+        {
+            var version = typeof(Spicetify).Assembly.GetName().Version;
+            return version == null ? "0.0.0" : string.Format("{0}.{1}.{2}", version.Major, version.Minor, version.Build);
         }
 
         public static string SelfTestJson()
@@ -1058,7 +1146,10 @@ namespace SpicetifyUpdater
                 { "marketplacePath", s.MarketplacePath },
                 { "spotifyFound", s.SpotifyFound },
                 { "onPath", s.OnPath },
-                { "releaseError", s.ReleaseError }
+                { "releaseError", s.ReleaseError },
+                { "selfVersion", s.SelfVersion },
+                { "selfLatest", s.SelfLatest },
+                { "selfUpdate", s.SelfUpdate }
             });
         }
 
@@ -1293,6 +1384,55 @@ namespace SpicetifyUpdater
                 throw new InvalidOperationException("spicetify apply exited with an error – is Spotify running?");
 
             return version;
+        }
+
+        public static string UpdateSelf(Action<string> log, Action<double> progress)
+        {
+            var release = LatestRelease(SelfRepo, true);
+            if (Compare(release.Tag, SelfVersion()) <= 0)
+                throw new InvalidOperationException("Already on the latest version (v" + SelfVersion() + ")");
+
+            var asset = release.Assets.FirstOrDefault(a =>
+                a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                a.Key.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) < 0);
+            if (asset.Key == null)
+                asset = release.Assets.FirstOrDefault(a => a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+            if (asset.Key == null)
+                throw new InvalidOperationException("Release v" + release.Tag + " has no downloadable exe");
+
+            var target = Process.GetCurrentProcess().MainModule.FileName;
+
+            // Fail early with a clear message instead of swapping a half-written file.
+            try
+            {
+                var probe = target + ".probe";
+                File.Copy(target, probe, true);
+                File.Delete(probe);
+            }
+            catch
+            {
+                throw new InvalidOperationException(
+                    "The app folder is not writable. Download the setup for v" + release.Tag + " from the release page instead.");
+            }
+
+            var download = Path.Combine(Path.GetTempPath(), asset.Key);
+            log("Downloading " + asset.Key);
+            Download(asset.Value, download, progress);
+
+            var script = Path.Combine(Path.GetTempPath(), "spicetify-updater-swap.cmd");
+            var lines = new[]
+            {
+                "@echo off",
+                "ping 127.0.0.1 -n 3 >nul",
+                "copy /y \"" + download + "\" \"" + target + "\" >nul || exit /b 1",
+                "start \"\" \"" + target + "\"",
+                "del \"%~f0\""
+            };
+            File.WriteAllText(script, string.Join("\r\n", lines), Encoding.Default);
+
+            log("Restarting with v" + release.Tag);
+            Process.Start(new ProcessStartInfo(script) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+            return release.Tag;
         }
 
         public static string RunCommand(string[] args, Action<string> log, bool allowFailure)
