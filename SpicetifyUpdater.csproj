@@ -7,9 +7,9 @@
     <UseWindowsForms>false</UseWindowsForms>
     <AssemblyName>Spicetify-Updater</AssemblyName>
     <RootNamespace>SpicetifyUpdater</RootNamespace>
-    <Version>2.1.0</Version>
-    <AssemblyVersion>2.1.0.0</AssemblyVersion>
-    <FileVersion>2.1.0.0</FileVersion>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
     <Product>Spicetify Updater</Product>
     <Company>Spicetify Updater</Company>
     <ApplicationIcon>build\icon.ico</ApplicationIcon>

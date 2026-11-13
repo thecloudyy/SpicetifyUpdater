@@ -10,17 +10,18 @@ downloads the correct build — no terminal needed.
 
 Two ways, both from the [latest release](../../releases/latest):
 
-- **`Spicetify-Updater-Setup-<version>.exe`** — Inno Setup installer. Adds Start-menu and optional
-  desktop shortcuts, registers an uninstaller, and installs per-user so no admin prompt appears.
-- **`Spicetify-Updater-<version>.exe`** — the same app as a standalone portable exe, ~60 KB.
+| File | What it is |
+| --- | --- |
+| `Spicetify-Updater-<version>-win-x64-setup.exe` | Inno Setup installer. Start-menu entry, optional desktop shortcut, registered uninstaller, per-user install so no admin prompt appears. |
+| `Spicetify-Updater-<version>-win-x64.exe` | The same app as a standalone portable exe, ~60 KB. |
 
 Either way it is a native WPF window: no Electron, no bundled browser, no Node.js, and it needs only
 .NET Framework 4.8, which ships with Windows 10 and 11.
 
 ## Updating the app itself
 
-The app checks its own GitHub releases on launch and shows `Updater v2.1.0 · v2.2.0 available` in the
-footer with an **Update to v2.2.0** button. It downloads the new exe, swaps it in after exiting and
+The app checks its own GitHub releases on launch and shows `Updater v1.0.0 · v1.1.0 available` in the
+footer with an **Update to v1.1.0** button. It downloads the new exe, swaps it in after exiting and
 relaunches — no installer needed. If it lives in a folder it cannot write to, it says so and points
 you at the setup instead of leaving a half-written file.
 

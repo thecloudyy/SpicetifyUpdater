@@ -2,7 +2,7 @@
 ; Build with: "C:\Users\<you>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "Spicetify Updater"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Spicetify Updater"
 #define MyAppExeName "Spicetify-Updater.exe"
 #define MyAppUrl "https://github.com/thecloudyy/SpicetifyUpdater"
@@ -23,7 +23,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=dist
-OutputBaseFilename=Spicetify-Updater-Setup-{#MyAppVersion}
+OutputBaseFilename=Spicetify-Updater-{#MyAppVersion}-win-x64-setup
 SetupIconFile=build\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
