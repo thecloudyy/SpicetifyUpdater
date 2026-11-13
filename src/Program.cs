@@ -18,6 +18,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace SpicetifyUpdater
@@ -30,6 +31,46 @@ namespace SpicetifyUpdater
             if (args.Length >= 2 && args[0] == "--selftest")
             {
                 File.WriteAllText(args[1], Spicetify.SelfTestJson());
+                return;
+            }
+
+            // Renders the window to a PNG for visual checks without a desktop session.
+            if (args.Length >= 2 && args[0] == "--render")
+            {
+                var trace = Path.ChangeExtension(args[1], ".log");
+                File.WriteAllText(trace, "starting\n");
+                var renderApp = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+                var window = new MainWindow();
+                window.Show();
+                File.AppendAllText(trace, "shown\n");
+                var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+                timer.Tick += (s, e) =>
+                {
+                    timer.Stop();
+                    try
+                    {
+                        File.AppendAllText(trace, "tick\n");
+                        var root = (FrameworkElement)window.Content;
+                        root.UpdateLayout();
+                        File.AppendAllText(trace, string.Format("layout {0}x{1}\n", root.ActualWidth, root.ActualHeight));
+                        var bitmap = new RenderTargetBitmap(
+                            Math.Max(1, (int)root.ActualWidth), Math.Max(1, (int)root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                        bitmap.Render(root);
+                        var encoder = new PngBitmapEncoder();
+                        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                        using (var stream = File.Create(args[1])) encoder.Save(stream);
+                        File.AppendAllText(trace, "saved\n");
+                    }
+                    catch (Exception ex)
+                    {
+                        File.AppendAllText(trace, "ERR " + ex + "\n");
+                    }
+                    renderApp.Shutdown();
+                };
+                timer.Start();
+                File.AppendAllText(trace, "timer started\n");
+                renderApp.Run();
+                File.AppendAllText(trace, "app exited\n");
                 return;
             }
 
@@ -378,24 +419,26 @@ namespace SpicetifyUpdater
             footer.Children.Add(selfPanel);
 
             /* root */
-            var root = new Grid { Margin = new Thickness(26, 26, 26, 22) };
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var root = new Grid { Margin = new Thickness(0), Background = Theme.Background };
+            var page = new Grid { Margin = new Thickness(26, 26, 26, 22) };
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             Grid.SetRow(header, 0);
             Grid.SetRow(cards, 1);
             Grid.SetRow(toolsCard, 2);
             Grid.SetRow(consoleCard, 3);
             Grid.SetRow(footer, 4);
-            root.Children.Add(header);
-            root.Children.Add(cards);
-            root.Children.Add(toolsCard);
-            root.Children.Add(consoleCard);
-            root.Children.Add(footer);
+            page.Children.Add(header);
+            page.Children.Add(cards);
+            page.Children.Add(toolsCard);
+            page.Children.Add(consoleCard);
+            page.Children.Add(footer);
 
+            root.Children.Add(page);
             Content = root;
 
             AppendLog("Ready. Nothing has been changed yet.", "muted");
@@ -727,7 +770,8 @@ namespace SpicetifyUpdater
                 BorderBrush = Theme.Line,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(18)
+                Padding = new Thickness(18),
+                Child = content
             };
         }
 

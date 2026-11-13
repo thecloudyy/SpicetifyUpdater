@@ -68,8 +68,9 @@ To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with 
 - `SpicetifyUpdater.csproj` — `net48`, `WinExe`
 - `build/` — app icon
 
-Two switches help without opening a window: `--selftest <path>` writes the detected status as JSON,
-and `--selfupdate [logpath]` performs the app self-update and exits.
+Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
+`--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the
+window to a PNG and exits.
 
 An earlier Electron-based version of this app is still in the git history.
 
