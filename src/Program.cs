@@ -183,8 +183,10 @@ namespace SpicetifyUpdater
             Title = "Spicetify Updater";
             Width = 1040;
             Height = 820;
-            MinWidth = 760;
-            MinHeight = 640;
+            // Below this the maintenance text runs under its buttons and the
+            // activity log has no height left at all.
+            MinWidth = 900;
+            MinHeight = 720;
             Background = Theme.Background;
             Foreground = Theme.Text;
             FontFamily = new FontFamily("Segoe UI");
@@ -317,7 +319,8 @@ namespace SpicetifyUpdater
                 Text = "Repair reinstalls the full CLI package, restores Spotify and re-applies.",
                 FontSize = 12.5,
                 Foreground = Theme.Muted,
-                Margin = new Thickness(0, 3, 0, 0)
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 3, 12, 0)
             });
             toolsLeft.Children.Add(_closeSpotify);
 
@@ -1003,7 +1006,8 @@ namespace SpicetifyUpdater
         {
             var check = new CheckBox
             {
-                Content = label,
+                // A wrapping label, so a narrow window shortens nothing.
+                Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap },
                 IsChecked = isChecked,
                 Foreground = Theme.Frozen("#A8AEB2"),
                 FontSize = 12,
