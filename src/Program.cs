@@ -1713,6 +1713,10 @@ namespace SpicetifyUpdater
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // Spicetify prints UTF-8 (including block-character progress bars);
+                // decoding with the console code page produced mojibake.
+                StandardOutputEncoding = Utf8NoBom,
+                StandardErrorEncoding = Utf8NoBom,
                 WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             };
 
@@ -1721,8 +1725,40 @@ namespace SpicetifyUpdater
 
             using (var process = new Process { StartInfo = info })
             {
-                process.OutputDataReceived += (s, e) => { if (e.Data != null && onLine != null) onLine(Clean(e.Data)); };
-                process.ErrorDataReceived += (s, e) => { if (e.Data != null && onLine != null) onLine(Clean(e.Data)); };
+                // stdout and stderr arrive on separate threads, so both go through one
+                // gate to keep the log in order and the pending frame consistent.
+                var gate = new object();
+                string pending = null;
+
+                Action<string> emit = data =>
+                {
+                    if (onLine == null) return;
+
+                    var line = Clean(data);
+                    if (line.Length == 0) return;
+
+                    lock (gate)
+                    {
+                        // A progress bar or spinner repaints the same line dozens of times;
+                        // keep the newest frame and write it once the run has finished.
+                        if (ProgressKey(line) != null)
+                        {
+                            pending = line;
+                            return;
+                        }
+
+                        if (pending != null)
+                        {
+                            onLine(pending);
+                            pending = null;
+                        }
+
+                        onLine(line);
+                    }
+                };
+
+                process.OutputDataReceived += (s, e) => { if (e.Data != null) emit(e.Data); };
+                process.ErrorDataReceived += (s, e) => { if (e.Data != null) emit(e.Data); };
                 process.Start();
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
@@ -1730,12 +1766,35 @@ namespace SpicetifyUpdater
                 if (!process.WaitForExit(timeoutMs))
                 {
                     try { process.Kill(); } catch { }
+                    lock (gate) pending = null;
                     return -1;
                 }
 
                 process.WaitForExit();
+
+                lock (gate)
+                {
+                    if (pending != null && onLine != null) onLine(pending);
+                    pending = null;
+                }
+
                 return process.ExitCode;
             }
+        }
+
+        private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
+
+        // The stable part of a line that gets repainted in place, or null for a normal
+        // log entry. Two lines with the same key are the same line drawn again.
+        private static string ProgressKey(string line)
+        {
+            var bracket = line.IndexOf('[');
+            if (bracket > 0) return line.Substring(0, bracket);
+
+            if (line.Length > 2 && (line[0] == '-' || line[0] == '\\' || line[0] == '|' || line[0] == '/') && line[1] == ' ')
+                return line.Substring(2);
+
+            return null;
         }
 
         private static string Clean(string line)
