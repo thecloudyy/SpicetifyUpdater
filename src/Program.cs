@@ -110,7 +110,7 @@ namespace SpicetifyUpdater
                 {
                     write("current " + Spicetify.SelfVersion());
                     var tag = Spicetify.UpdateSelf(write, ratio => { });
-                    write("OK " + tag);
+                    write(tag == null ? "OK no update" : "OK " + tag);
                 }
                 catch (Exception ex)
                 {
@@ -550,6 +550,7 @@ namespace SpicetifyUpdater
         private readonly TextBlock _envLabel;
         private readonly TextBlock _selfLabel;
         private readonly Button _selfButton;
+        private bool _selfCheckLogged;
 
         /* ------------------------------------------------------------- logging */
 
@@ -680,8 +681,11 @@ namespace SpicetifyUpdater
             }
             else
             {
-                AppendLog("Done", "success");
-                if (action == "update-self")
+                // A self-update that found nothing to install returns no tag and keeps
+                // the app open; a real one hands over to the setup and exits.
+                var updated = action == "update-self" && !string.IsNullOrEmpty(result.Result);
+                if (!updated) AppendLog("Done", "success");
+                if (updated)
                 {
                     Application.Current.Shutdown();
                     return;
@@ -836,6 +840,12 @@ namespace SpicetifyUpdater
             _selfLabel.Text = selfText;
             _selfButton.Visibility = status.SelfUpdate ? Visibility.Visible : Visibility.Collapsed;
             if (status.SelfUpdate) _selfButton.Content = "Update to v" + status.SelfLatest;
+
+            if (!status.SelfUpdate && !string.IsNullOrEmpty(status.SelfLatest) && !_selfCheckLogged)
+            {
+                _selfCheckLogged = true;
+                AppendLog("No updates found – Spicetify Updater v" + status.SelfVersion + " is the latest", "muted");
+            }
 
             if (!string.IsNullOrEmpty(status.ReleaseError))
                 AppendLog("GitHub check failed: " + status.ReleaseError, "error");
@@ -1575,23 +1585,58 @@ namespace SpicetifyUpdater
         {
             var release = LatestRelease(SelfRepo, true);
             if (Compare(release.Tag, SelfVersion()) <= 0)
-                throw new InvalidOperationException("Already on the latest version (v" + SelfVersion() + ")");
+            {
+                log("No updates found – you are on the latest version (v" + SelfVersion() + ")");
+                return null;
+            }
 
-            var asset = release.Assets.FirstOrDefault(a =>
+            // The setup is preferred: it also refreshes the shortcuts and uninstaller
+            // of an installed copy instead of leaving an orphaned exe behind.
+            var setup = release.Assets.FirstOrDefault(a =>
+                a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                a.Key.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0);
+            var portable = release.Assets.FirstOrDefault(a =>
                 a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
                 a.Key.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) < 0);
-            if (asset.Key == null)
-                asset = release.Assets.FirstOrDefault(a => a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+            var asset = setup.Key != null ? setup : portable;
             if (asset.Key == null)
                 throw new InvalidOperationException("Release v" + release.Tag + " has no downloadable exe");
 
-            var target = Process.GetCurrentProcess().MainModule.FileName;
+            var download = Path.Combine(Path.GetTempPath(), asset.Key);
+            log("Downloading " + asset.Key);
+            Download(asset.Value, download, progress);
+
+            var current = Process.GetCurrentProcess().MainModule.FileName;
+
+            if (setup.Key != null)
+            {
+                // The app closes as soon as this returns, so the setup can replace the
+                // installed copy; it then starts the new version on its own.
+                var installed = InstalledTarget();
+                var script = Path.Combine(Path.GetTempPath(), "spicetify-updater-setup.cmd");
+                var lines = new[]
+                {
+                    "@echo off",
+                    "ping 127.0.0.1 -n 4 >nul",
+                    "start \"\" /wait \"" + download + "\" /SILENT /SP- /NORESTART /CLOSEAPPLICATIONS /SUPPRESSMSGBOXES",
+                    "if exist \"" + installed + "\" start \"\" \"" + installed + "\"",
+                    "if not exist \"" + installed + "\" start \"\" \"" + current + "\"",
+                    "del \"%~f0\""
+                };
+                File.WriteAllText(script, string.Join("\r\n", lines), Encoding.Default);
+
+                log("Running the setup for v" + release.Tag);
+                Process.Start(new ProcessStartInfo(script) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+                return release.Tag;
+            }
+
+            // Portable-only release: swap the exe in place.
 
             // Fail early with a clear message instead of swapping a half-written file.
             try
             {
-                var probe = target + ".probe";
-                File.Copy(target, probe, true);
+                var probe = current + ".probe";
+                File.Copy(current, probe, true);
                 File.Delete(probe);
             }
             catch
@@ -1600,24 +1645,28 @@ namespace SpicetifyUpdater
                     "The app folder is not writable. Download the setup for v" + release.Tag + " from the release page instead.");
             }
 
-            var download = Path.Combine(Path.GetTempPath(), asset.Key);
-            log("Downloading " + asset.Key);
-            Download(asset.Value, download, progress);
-
-            var script = Path.Combine(Path.GetTempPath(), "spicetify-updater-swap.cmd");
-            var lines = new[]
+            var swapScript = Path.Combine(Path.GetTempPath(), "spicetify-updater-swap.cmd");
+            var swapLines = new[]
             {
                 "@echo off",
                 "ping 127.0.0.1 -n 3 >nul",
-                "copy /y \"" + download + "\" \"" + target + "\" >nul || exit /b 1",
-                "start \"\" \"" + target + "\"",
+                "copy /y \"" + download + "\" \"" + current + "\" >nul || exit /b 1",
+                "start \"\" \"" + current + "\"",
                 "del \"%~f0\""
             };
-            File.WriteAllText(script, string.Join("\r\n", lines), Encoding.Default);
+            File.WriteAllText(swapScript, string.Join("\r\n", swapLines), Encoding.Default);
 
             log("Restarting with v" + release.Tag);
-            Process.Start(new ProcessStartInfo(script) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+            Process.Start(new ProcessStartInfo(swapScript) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
             return release.Tag;
+        }
+
+        // Where the per-user Inno Setup install keeps the app ({autopf}\Spicetify Updater).
+        private static string InstalledTarget()
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "Spicetify Updater", "Spicetify-Updater.exe");
         }
 
         public static string RunCommand(string[] args, Action<string> log, bool allowFailure)
