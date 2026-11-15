@@ -65,19 +65,14 @@ namespace SpicetifyUpdater
                         window.UpdateLayout();
                         root.UpdateLayout();
                         var pageElement = (FrameworkElement)((Grid)root).Children[0];
-                        var footerElement = (FrameworkElement)((Grid)pageElement).Children[4];
+                        var consoleElement = (FrameworkElement)((Grid)pageElement).Children[3];
                         File.AppendAllText(trace, string.Format(
-                            "window {0}x{1} root {2}x{3} page {4}x{5} footerH {6} pageBottom {7}\n",
+                            "window {0}x{1} root {2}x{3} page {4}x{5} consoleH {6} pageBottom {7}\n",
                             window.ActualWidth, window.ActualHeight,
                             root.ActualWidth, root.ActualHeight,
                             pageElement.ActualWidth, pageElement.ActualHeight,
-                            footerElement.ActualHeight,
+                            consoleElement.ActualHeight,
                             pageElement.TranslatePoint(new Point(0, pageElement.ActualHeight), root).Y));
-                        File.AppendAllText(trace, string.Format(
-                            "footer {0}x{1} at ({2},{3})\n",
-                            footerElement.ActualWidth, footerElement.ActualHeight,
-                            footerElement.TranslatePoint(new Point(0, 0), root).X,
-                            footerElement.TranslatePoint(new Point(0, 0), root).Y));
                         var bitmap = new RenderTargetBitmap(
                             Math.Max(1, (int)root.ActualWidth), Math.Max(1, (int)root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
                         bitmap.Render(root);
@@ -310,14 +305,29 @@ namespace SpicetifyUpdater
             _refresh = Ui.MakeButton("Check for updates", false);
             _refresh.Click += async (s, e) => await RefreshStatusAsync(true);
 
+            // Only shown when there really is a newer release to install.
+            _selfButton = Ui.MakeButton("Update app", true);
+            _selfButton.Padding = new Thickness(12, 4, 12, 4);
+            _selfButton.FontSize = 11.5;
+            _selfButton.Margin = new Thickness(0, 0, 8, 0);
+            _selfButton.Visibility = Visibility.Collapsed;
+            _selfButton.Click += async (s, e) => await RunActionAsync("update-self", false);
+
+            var headerButtons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            headerButtons.Children.Add(_selfButton);
+            headerButtons.Children.Add(_refresh);
+
             var header = new Grid { Margin = new Thickness(0, 0, 0, 22) };
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Grid.SetColumn(brand, 0);
-            Grid.SetColumn(_refresh, 1);
-            _refresh.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(headerButtons, 1);
             header.Children.Add(brand);
-            header.Children.Add(_refresh);
+            header.Children.Add(headerButtons);
 
             /* CLI card */
             _cliInstalled = Ui.Value();
@@ -483,43 +493,6 @@ namespace SpicetifyUpdater
             var consoleCard = Ui.Card(consoleBody);
             consoleCard.Margin = new Thickness(0, 16, 0, 0);
 
-            var env = new TextBlock
-            {
-                Text = "checking…",
-                FontSize = 11,
-                Foreground = Theme.Frozen("#5F6665"),
-                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _envLabel = env;
-
-            _selfLabel = new TextBlock
-            {
-                Text = "Updater v" + Spicetify.SelfVersion(),
-                FontSize = 11,
-                Foreground = Theme.Frozen("#5F6665"),
-                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 10, 0)
-            };
-
-            _selfButton = Ui.MakeButton("Update app", true);
-            _selfButton.Padding = new Thickness(12, 4, 12, 4);
-            _selfButton.FontSize = 11.5;
-            _selfButton.Visibility = Visibility.Collapsed;
-            _selfButton.Click += async (s, e) => await RunActionAsync("update-self", false);
-
-            var footer = new Grid { Margin = new Thickness(2, 14, 0, 0) };
-            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var selfPanel = new StackPanel { Orientation = Orientation.Horizontal };
-            selfPanel.Children.Add(_selfLabel);
-            selfPanel.Children.Add(_selfButton);
-            Grid.SetColumn(env, 0);
-            Grid.SetColumn(selfPanel, 1);
-            footer.Children.Add(env);
-            footer.Children.Add(selfPanel);
-
             /* root */
             var root = new Grid { Margin = new Thickness(0), Background = Theme.Background };
             var page = new Grid { Margin = new Thickness(26, 26, 26, 22) };
@@ -527,18 +500,15 @@ namespace SpicetifyUpdater
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             Grid.SetRow(header, 0);
             Grid.SetRow(cards, 1);
             Grid.SetRow(toolsCard, 2);
             Grid.SetRow(consoleCard, 3);
-            Grid.SetRow(footer, 4);
             page.Children.Add(header);
             page.Children.Add(cards);
             page.Children.Add(toolsCard);
             page.Children.Add(consoleCard);
-            page.Children.Add(footer);
 
             root.Children.Add(page);
             Content = root;
@@ -547,8 +517,6 @@ namespace SpicetifyUpdater
             Loaded += async (s, e) => await RefreshStatusAsync(false);
         }
 
-        private readonly TextBlock _envLabel;
-        private readonly TextBlock _selfLabel;
         private readonly Button _selfButton;
         private bool _selfCheckLogged;
 
@@ -582,7 +550,7 @@ namespace SpicetifyUpdater
             _log.ScrollToEnd();
         }
 
-        private void SetBusy(bool busy, string label = "Working…")
+        private void SetBusy(bool busy, string label = "Working")
         {
             _busy = busy;
             foreach (var button in new[] { _cliPrimary, _cliSecondary, _mpPrimary, _mpSecondary, _repair, _backupApply, _apply, _restore, _selfButton })
@@ -606,7 +574,7 @@ namespace SpicetifyUpdater
         {
             if (_busy || string.IsNullOrEmpty(action)) return;
 
-            SetBusy(true, "starting…");
+            SetBusy(true, "starting");
             var result = await Task.Run(() =>
             {
                 var wasRunning = false;
@@ -618,7 +586,7 @@ namespace SpicetifyUpdater
                         if (wasRunning)
                         {
                             AppendLog("Closing Spotify", "dim");
-                            if (!Spicetify.StopSpotify()) AppendLog("Spotify is still running – file changes may fail", "error");
+                            if (!Spicetify.StopSpotify()) AppendLog("Spotify is still running, file changes may fail", "error");
                         }
                         else
                         {
@@ -668,7 +636,7 @@ namespace SpicetifyUpdater
                         }
                         else
                         {
-                            AppendLog("Could not reopen Spotify – start it yourself", "error");
+                            AppendLog("Could not reopen Spotify, start it yourself", "error");
                         }
                     }
                 }
@@ -742,7 +710,7 @@ namespace SpicetifyUpdater
 
         private static string VersionText(string value)
         {
-            return string.IsNullOrEmpty(value) ? "—" : "v" + value;
+            return string.IsNullOrEmpty(value) ? "-" : "v" + value;
         }
 
         private void Render(Status status)
@@ -830,21 +798,13 @@ namespace SpicetifyUpdater
                 _mpSecondary.IsEnabled = !_busy;
             }
 
-            var spotify = status.SpotifyFound ? "Spotify found" : "Spotify not detected";
-            var onPath = status.OnPath ? "on PATH" : "not on PATH";
-            _envLabel.Text = string.Format("{0}-{1} · {2} · {3}", status.Platform, status.Arch, spotify, onPath);
-
-            var selfText = "Updater v" + (status.SelfVersion ?? "?");
-            if (!string.IsNullOrEmpty(status.SelfLatest))
-                selfText += status.SelfUpdate ? " · v" + status.SelfLatest + " available" : " · up to date";
-            _selfLabel.Text = selfText;
             _selfButton.Visibility = status.SelfUpdate ? Visibility.Visible : Visibility.Collapsed;
             if (status.SelfUpdate) _selfButton.Content = "Update to v" + status.SelfLatest;
 
             if (!status.SelfUpdate && !string.IsNullOrEmpty(status.SelfLatest) && !_selfCheckLogged)
             {
                 _selfCheckLogged = true;
-                AppendLog("No updates found – Spicetify Updater v" + status.SelfVersion + " is the latest", "muted");
+                AppendLog("No updates found, Spicetify Updater v" + status.SelfVersion + " is the latest", "muted");
             }
 
             if (!string.IsNullOrEmpty(status.ReleaseError))
@@ -1006,7 +966,7 @@ namespace SpicetifyUpdater
         {
             return new TextBlock
             {
-                Text = "—",
+                Text = "-",
                 FontSize = 16,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = Theme.Text
@@ -1029,7 +989,7 @@ namespace SpicetifyUpdater
 
         public static TextBlock PillText()
         {
-            return new TextBlock { Text = "Checking…", FontSize = 10.5, FontWeight = FontWeights.SemiBold };
+            return new TextBlock { Text = "Checking", FontSize = 10.5, FontWeight = FontWeights.SemiBold };
         }
 
         public static Border Pill(TextBlock text)
@@ -1487,7 +1447,7 @@ namespace SpicetifyUpdater
                 AddToPath(log);
 
                 if (Directory.Exists(LegacyRoot))
-                    log("Note: an older install is still in " + LegacyRoot + " – the up-to-date one is " + CliRoot);
+                    log("An older install is still in " + LegacyRoot + ", the one in use is " + CliRoot);
 
                 log("Spicetify CLI v" + release.Tag + " installed");
                 return release.Tag;
@@ -1541,7 +1501,7 @@ namespace SpicetifyUpdater
                 RunProcess(exe, "config custom_apps spicetify-marketplace- -q", log, 60000);
                 if (RunProcess(exe, "config custom_apps marketplace", log, 60000) != 0)
                 {
-                    log("Could not add marketplace to custom_apps automatically – set it manually with:");
+                    log("Could not add marketplace to custom_apps automatically, set it manually with:");
                     log("  spicetify config custom_apps marketplace");
                 }
                 RunProcess(exe, "config inject_css 1 replace_colors 1", log, 60000);
@@ -1549,7 +1509,7 @@ namespace SpicetifyUpdater
                 log("Backing up Spotify and applying changes");
                 RunProcess(exe, "backup", log, 180000);
                 if (RunProcess(exe, "apply", log, 300000) != 0)
-                    log("spicetify apply returned a non-zero exit code – see the output above");
+                    log("spicetify apply returned a non-zero exit code, see the output above");
 
                 File.WriteAllText(Path.Combine(appDir, ".marketplace-version"), release.Tag + Environment.NewLine);
                 log("Marketplace v" + release.Tag + " installed");
@@ -1569,14 +1529,14 @@ namespace SpicetifyUpdater
 
             log("Restoring the original Spotify files");
             if (RunProcess(exe, "restore", log, 300000) != 0)
-                log("No usable backup to restore from – continuing with apply");
+                log("No usable backup to restore from, continuing with apply");
 
             if (!Directory.Exists(Path.Combine(CliRoot, "jsHelper")))
                 log("Warning: " + Path.Combine(CliRoot, "jsHelper") + " is still missing");
 
             log("Re-applying Spicetify");
             if (RunProcess(exe, "apply", log, 300000) != 0)
-                throw new InvalidOperationException("spicetify apply exited with an error – is Spotify running?");
+                throw new InvalidOperationException("spicetify apply exited with an error, is Spotify running?");
 
             return version;
         }
@@ -1586,7 +1546,7 @@ namespace SpicetifyUpdater
             var release = LatestRelease(SelfRepo, true);
             if (Compare(release.Tag, SelfVersion()) <= 0)
             {
-                log("No updates found – you are on the latest version (v" + SelfVersion() + ")");
+                log("No updates found, you are on the latest version (v" + SelfVersion() + ")");
                 return null;
             }
 
