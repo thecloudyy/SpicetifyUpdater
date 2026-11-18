@@ -80,10 +80,11 @@ To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with 
 powershell -ExecutionPolicy Bypass -File scripts/run-checks.ps1
 ```
 
-Builds the app, compiles `scripts/Checks.cs` against the built exe and runs it: checksum-file
-parsing, download verification (size, sha256, empty and missing files), archive integrity, the
-cache-tag rule, then live lookups against GitHub plus a real download from a release, and finally
-`--selftest`. It exits non-zero on the first failure and needs no credentials.
+First it checks that the version in `SpicetifyUpdater.csproj` matches `MyAppVersion` in
+`installer.iss`, then builds the app, compiles `scripts/Checks.cs` against the built exe and runs it:
+checksum-file parsing, download verification (size, sha256, empty and missing files), archive
+integrity, the cache-tag rule, then live lookups against GitHub plus a real download from a release,
+and finally `--selftest`. It exits non-zero on the first failure and needs no credentials.
 
 GitHub Actions runs the same script on `windows-latest` for every push and pull request, so a change
 that breaks the release lookup or download verification fails before a release is cut.

@@ -1,5 +1,5 @@
 # Builds Spicetify Updater, compiles scripts/Checks.cs against the built exe and runs it.
-# Also runs the app's own --selftest so the status path is covered.
+# Also checks the two places the version lives, and runs the app's own --selftest.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts/run-checks.ps1
 
@@ -7,7 +7,28 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 
+function Read-Setting([string]$path, [string]$pattern, [string]$label) {
+    if (-not (Test-Path $path)) { throw "${label}: file not found at $path" }
+
+    $match = [regex]::Match((Get-Content $path -Raw), $pattern)
+    if (-not $match.Success) { throw "${label}: not found in $path" }
+
+    return $match.Groups[1].Value.Trim()
+}
+
 try {
+    Write-Host '== versions'
+    $projectVersion = (Read-Setting (Join-Path $root 'SpicetifyUpdater.csproj') '<Version>\s*([^<]+?)\s*</Version>' 'csproj Version')
+    $installerVersion = (Read-Setting (Join-Path $root 'installer.iss') '#define\s+MyAppVersion\s+"([^"]+)"' 'installer MyAppVersion')
+
+    if ($projectVersion -ne $installerVersion) {
+        Write-Host ("  FAIL  csproj Version {0} and installer MyAppVersion {1} disagree, so the setup would be named for one version and install the other" -f $projectVersion, $installerVersion)
+        Write-Host ''
+        Write-Host 'SOMETHING FAILED'
+        exit 1
+    }
+    Write-Host ("  ok    version {0} in both the csproj and installer.iss" -f $projectVersion)
+
     Write-Host '== build'
     & dotnet build SpicetifyUpdater.csproj -c Release -v q
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
