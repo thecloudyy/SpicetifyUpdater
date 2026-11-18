@@ -225,8 +225,14 @@ try {
             # A draft that was never created cannot be deleted, and a failed creation must not
             # hide the original error behind a second one.
             if ($release) {
-                Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
-                Write-Host '  draft deleted, nothing published'
+                # Best effort: a delete that fails here must not replace the error that got us here.
+                try {
+                    Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
+                    Write-Host '  draft deleted, nothing published'
+                }
+                catch {
+                    Write-Host "  draft $($release.id) is still there, remove it at https://github.com/$repo/releases"
+                }
             }
             else {
                 Write-Host '  no draft was created, nothing published'
