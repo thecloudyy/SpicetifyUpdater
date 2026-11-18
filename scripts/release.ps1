@@ -4,19 +4,16 @@ param(
     [switch]$DryRun
 )
 
-# Publishes a release end to end.
+# Publishes a release: bump, build, check, upload, publish.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2
-#   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2 -Notes "What changed"
 #   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2 -DryRun
 #
-# Order matters and is the point of this script: the portable exe and the setup are built and
-# hashed first, the checks run, the commit and tag are pushed, and only then are the files
-# uploaded - with SHA256SUMS.txt last, so it always describes files that are already attached.
-# A release therefore cannot ship with a missing or stale checksum file.
+# The release is created as a draft, the files are uploaded and checked while it is still
+# hidden, and only then is it published. A failure anywhere in that half leaves nothing
+# public and no tag behind, so the script can simply be run again.
 #
-# Needs a GitHub token with release write access, taken from GH_TOKEN, `gh auth token`, or a
-# stored git credential for github.com. -DryRun does everything except commit, push and publish.
+# Needs a token with release access, from GH_TOKEN, `gh auth token`, or a stored git credential.
 
 $ErrorActionPreference = 'Stop'
 
@@ -60,19 +57,13 @@ function Get-Token {
 
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     if ($gh) {
-        try {
-            $token = & gh auth token 2>$null
-            if ($token) { return $token.Trim() }
-        }
-        catch { }
+        $token = & gh auth token 2>$null
+        if ($token) { return $token.Trim() }
     }
 
-    try {
-        $lines = ("protocol=https`nhost=github.com`n`n" | & git credential fill 2>$null)
-        $password = $lines | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
-        if ($password) { return $password.Substring('password='.Length).Trim() }
-    }
-    catch { }
+    $lines = "protocol=https`nhost=github.com`n`n" | & git credential fill 2>$null
+    $password = $lines | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
+    if ($password) { return $password.Substring('password='.Length).Trim() }
 
     Fail 'no GitHub token: set GH_TOKEN, run "gh auth login", or store a credential for github.com'
 }
@@ -89,14 +80,37 @@ function Get-Iscc {
     Fail 'ISCC.exe not found: install Inno Setup 6 or 7, or put iscc on PATH'
 }
 
-$pushLocation = $false
-try {
-    Push-Location $root
-    $pushLocation = $true
+function Header([string]$token) {
+    return @{
+        Authorization = "token $token"
+        Accept        = 'application/vnd.github+json'
+        'User-Agent'  = 'SpicetifyUpdater-release'
+    }
+}
 
+function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) {
+    $name = [IO.Path]::GetFileName($path)
+    $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
+           "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($label))"
+    $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
+    Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
+}
+
+function Assert-Assets($release, [hashtable]$expected) {
+    foreach ($name in $expected.Keys) {
+        $asset = $release.assets | Where-Object { $_.name -eq $name }
+        if (-not $asset) { throw "$name is missing from the release" }
+        if ($asset.state -ne 'uploaded') { throw "$name is $($asset.state)" }
+        if ($asset.size -ne $expected[$name]) { throw "$name is $($asset.size) bytes on GitHub but $($expected[$name]) locally" }
+    }
+
+    Write-Host "  ok    $($expected.Count) assets uploaded with the expected sizes"
+}
+
+Push-Location $root
+try {
     Step 'preconditions'
     if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "version must look like 1.0.2, got '$Version'" }
-
     if ((git status --porcelain)) { Fail 'the working tree has changes, commit or stash them first' }
 
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
@@ -111,18 +125,19 @@ try {
         Fail "main is $ahead commit(s) ahead and $behind behind origin/main, push or pull first"
     }
 
-    # Ask origin rather than the local clone, so a stale local tag can neither block a
-    # release nor let one be cut for a version that already exists.
+    # Ask origin, not the local clone, so a stale local tag cannot block or fake a release.
     & git ls-remote --exit-code --tags origin "refs/tags/v$Version" *> $null
     if ($LASTEXITCODE -eq 0) { Fail "tag v$Version already exists on origin" }
 
     $current = Read-Setting (Join-Path $root 'SpicetifyUpdater.csproj') '<Version>([^<]+)</Version>' 'csproj Version'
-    $newer = ([version]$Version).CompareTo([version]$current)
-    if ($newer -le 0) { Fail "version $Version is not newer than the current $current" }
+    if (([version]$Version).CompareTo([version]$current) -le 0) {
+        Fail "version $Version is not newer than the current $current"
+    }
 
-    $token = $null
-    if (-not $DryRun) { $token = Get-Token }
-    Write-Host "  ok    $current -> $Version on $branch"
+    # Resolved here rather than at publish time: a missing token must not be discovered
+    # after the commit and push have already happened.
+    $token = Get-Token
+    Write-Host "  ok    $current -> $Version on $branch, token available"
 
     Step 'bump'
     $project = Join-Path $root 'SpicetifyUpdater.csproj'
@@ -139,18 +154,16 @@ try {
     $app = Join-Path $root 'bin\Release\Spicetify-Updater.exe'
     $built = (Get-Item $app).VersionInfo.FileVersion
     if ($built -notlike "$Version.*") { Fail "the built exe reports $built, expected $Version" }
-    Write-Host "  ok    exe reports $built"
 
     Step 'installer'
-    $iscc = Get-Iscc
-    & $iscc installer.iss
-    if ($LASTEXITCODE -ne 0) { Fail 'ISCC failed' }
-
     $dist = Join-Path $root 'dist'
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
     $portable = Join-Path $dist $portableName
     $setup = Join-Path $dist $setupName
     Copy-Item $app $portable -Force
+
+    & (Get-Iscc) installer.iss
+    if ($LASTEXITCODE -ne 0) { Fail 'ISCC failed' }
     foreach ($file in $portable, $setup) {
         if (-not (Test-Path $file)) { Fail "expected build output missing: $file" }
         Write-Host ("  ok    {0} ({1:N0} bytes)" -f (Split-Path -Leaf $file), (Get-Item $file).Length)
@@ -167,97 +180,87 @@ try {
         Write-Host ("  {0}  {1}" -f $hash, (Split-Path -Leaf $file))
         "$hash  $(Split-Path -Leaf $file)"
     }
+    $checksumText = ($lines -join "`n") + "`n"
     $checksumPath = Join-Path $dist $checksumName
-    [IO.File]::WriteAllText($checksumPath, ($lines -join "`n") + "`n")
-    Write-Host "  ok    $checksumName written next to the builds"
+    [IO.File]::WriteAllText($checksumPath, $checksumText)
 
     if ($DryRun) {
         Step 'dry run'
         git checkout -- SpicetifyUpdater.csproj installer.iss
-        Write-Host "  version files restored, nothing committed, pushed or published"
-        Write-Host "  would publish v$Version with $portableName, $setupName and $checksumName"
+        Write-Host "  version files restored, nothing committed or published"
         exit 0
     }
 
-    Step 'commit and tag'
+    Step 'commit'
     git add SpicetifyUpdater.csproj installer.iss
     git commit -m "Release $Version" -m "Published by scripts/release.ps1."
     if ($LASTEXITCODE -ne 0) { Fail 'git commit failed' }
-
-    git tag -a "v$Version" -m "Spicetify Updater $Version"
-    if ($LASTEXITCODE -ne 0) { Fail 'git tag failed' }
-
     git push origin main
-    if ($LASTEXITCODE -ne 0) { Fail 'git push of main failed' }
+    if ($LASTEXITCODE -ne 0) { Fail 'git push failed' }
 
-    git push origin "v$Version"
-    if ($LASTEXITCODE -ne 0) { Fail 'git push of the tag failed' }
-    Write-Host "  ok    main and v$Version pushed"
-
-    Step 'release'
-    $headers = @{
-        Authorization = "token $token"
-        Accept        = 'application/vnd.github+json'
-        'User-Agent'  = 'SpicetifyUpdater-release'
-    }
     $sha = (git rev-parse HEAD).Trim()
-    $body = @{
-        tag_name         = "v$Version"
-        target_commitish = $sha
-        name             = "Spicetify Updater $Version"
-        body             = $Notes
-        draft            = $false
-        prerelease       = $false
-    } | ConvertTo-Json -Depth 5
-
-    $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
-        -Headers $headers -Body $body -ContentType 'application/json'
-    Write-Host "  ok    release created: $($release.html_url)"
-
-    function Send-Asset([string]$path, [string]$label) {
-        $name = [IO.Path]::GetFileName($path)
-        $url = "https://uploads.github.com/repos/$repo/releases/$($release.id)/assets" +
-               "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($label))"
-        $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path `
-            -ContentType 'application/octet-stream'
-        Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
-        return $asset
-    }
-
-    Step 'assets'
-    Send-Asset $portable 'Portable app (no install)' | Out-Null
-    Send-Asset $setup 'Windows installer (Inno Setup)' | Out-Null
-
-    # Last on purpose: the checksum file can only ever describe files already uploaded.
-    Send-Asset $checksumPath 'SHA-256 checksums' | Out-Null
-
-    Step 'verify'
-    $published = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/v$Version" -Headers $headers
     $expected = @{}
     $expected[$portableName] = (Get-Item $portable).Length
     $expected[$setupName] = (Get-Item $setup).Length
     $expected[$checksumName] = (Get-Item $checksumPath).Length
-    foreach ($asset in $published.assets) {
-        if ($asset.state -ne 'uploaded') { Fail "$($asset.name) is $($asset.state)" }
-        if ($expected.ContainsKey($asset.name) -and $asset.size -ne $expected[$asset.name]) {
-            Fail "$($asset.name) is $($asset.size) bytes on GitHub but $(($expected[$asset.name])) locally"
-        }
-        Write-Host ("  ok    {0} {1}" -f $asset.name, $asset.state)
-    }
-    foreach ($name in $expected.Keys) {
-        if (-not ($published.assets | Where-Object { $_.name -eq $name })) { Fail "$name is missing from the release" }
-    }
 
-    $downloaded = (Invoke-WebRequest -Uri "https://github.com/$repo/releases/download/v$Version/$checksumName" -Headers $headers -UseBasicParsing).Content
-    if ($downloaded.Trim() -ne (Get-Content $checksumPath -Raw).Trim()) {
-        Fail 'the published checksum file does not match the local one'
+    # Everything from here on happens while the release is a draft: any failure leaves
+    # nothing public and no tag, so the same command can just be run again.
+    $headers = Header $token
+    $release = $null
+    try {
+        Step 'draft release'
+        $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
+            -Headers $headers -ContentType 'application/json' -Body (@{
+                tag_name         = "v$Version"
+                target_commitish = $sha
+                name             = "Spicetify Updater $Version"
+                body             = $Notes
+                draft            = $true
+                prerelease       = $false
+            } | ConvertTo-Json)
+        Write-Host "  ok    draft $($release.id)"
+
+        Step 'upload'
+        Send-Asset $headers $release.id $portable 'Portable app (no install)'
+        Send-Asset $headers $release.id $setup 'Windows installer (Inno Setup)'
+        # Last on purpose: the checksum file only ever describes files already uploaded.
+        Send-Asset $headers $release.id $checksumPath 'SHA-256 checksums'
+
+        Step 'verify draft'
+        $draft = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers
+        Assert-Assets $draft $expected
+
+        Step 'publish'
+        $published = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" `
+            -Headers $headers -ContentType 'application/json' -Body (@{ draft = $false } | ConvertTo-Json)
+        if ($published.draft) { throw 'the release is still a draft' }
+        Write-Host "  ok    published $($published.html_url)"
+
+        Step 'verify published'
+        $live = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/v$Version" -Headers $headers
+        Assert-Assets $live $expected
+        if (-not $live.assets) { throw 'the published release has no assets' }
+
+        $checksumAsset = $live.assets | Where-Object { $_.name -eq $checksumName }
+        $downloaded = (Invoke-WebRequest -Uri $checksumAsset.browser_download_url -Headers $headers -UseBasicParsing).Content
+        if ($downloaded.Trim() -ne $checksumText.Trim()) { throw 'the published checksum file does not match the built files' }
+        Write-Host '  ok    published checksums match the uploaded files'
     }
-    Write-Host '  ok    published checksums match the uploaded files'
+    catch {
+        Write-Host "  FAIL  $($_.Exception.Message)"
+        if ($release) {
+            Write-Host "  nothing is public: draft $($release.id) at https://github.com/$repo/releases"
+        }
+        Write-Host ''
+        Write-Host 'RELEASE ABORTED'
+        exit 1
+    }
 
     Step 'done'
-    Write-Host "  v$Version is published: $($release.html_url)"
+    Write-Host "  v$Version is published: $($published.html_url)"
     exit 0
 }
 finally {
-    if ($pushLocation) { Pop-Location }
+    Pop-Location
 }
