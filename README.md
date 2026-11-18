@@ -124,6 +124,19 @@ It probes the installed app by default (or one passed with `-Exe`) and spends no
 `-Current` it expects an update to be offered, with `-Current` it expects the app to be up to date,
 which is how an upgrade is shown to have closed the loop.
 
+Two more checks look at a release from outside, so they are not part of that run either:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/verify-release.ps1 [-Tag v1.0.2]
+powershell -ExecutionPolicy Bypass -File scripts/launch-check.ps1 [-Exe path\to\Spicetify-Updater.exe]
+```
+
+`verify-release.ps1` trusts nothing local: it downloads the published `SHA256SUMS.txt`, then every
+file that file lists, and compares each hash — defaulting to the version in the csproj, so it also
+answers whether the release for the current source is intact. `launch-check.ps1` starts the installed
+app, confirms it stays up and responds, checks that nothing was logged as an error, and closes the
+copy it started.
+
 GitHub Actions runs `run-checks.ps1` on `windows-latest` for every push and pull request, so a change
 that breaks the release lookup, download verification or upload retry fails before a release is cut.
 
@@ -134,9 +147,10 @@ that breaks the release lookup, download verification or upload retry fails befo
 - `SpicetifyUpdater.csproj` — `net48`, `WinExe`
 - `build/` — app icon
 - `scripts/` — `release.ps1` (cuts a release), `run-checks.ps1` and `Checks.cs` (the checks above),
-  `retry-probe.ps1` with `flaky-upload.py` (the upload retry probe), `self-update-probe.ps1` with
-  `SelfUpdateProbe.cs` (the self-update probe), `add_checksums.py` (adds `SHA256SUMS.txt` to a
-  release that predates the script)
+  `add_checksums.py` (adds `SHA256SUMS.txt` to a release that predates the script)
+- `scripts/` probes — `retry-probe.ps1` with `flaky-upload.py` (upload retries),
+  `self-update-probe.ps1` with `SelfUpdateProbe.cs` (the self-update path), `verify-release.ps1`
+  (published assets against their checksums), `launch-check.ps1` (the app starts cleanly)
 
 Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
 `--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the
