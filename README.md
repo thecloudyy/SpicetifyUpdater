@@ -1,5 +1,7 @@
 # Spicetify Updater
 
+[![checks](https://github.com/thecloudyy/SpicetifyUpdater/actions/workflows/checks.yml/badge.svg?branch=main)](https://github.com/thecloudyy/SpicetifyUpdater/actions/workflows/checks.yml)
+
 A tiny desktop app that installs and updates the [Spicetify](https://spicetify.app) CLI and the
 [Spicetify Marketplace](https://github.com/spicetify/marketplace) for you.
 
