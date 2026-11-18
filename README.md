@@ -40,10 +40,10 @@ instead; if the folder is not writable it says so instead of leaving a half-writ
 - **Checked downloads** — every archive is compared with the release's published size and sha256
   before anything is extracted, so a truncated or tampered download stops with a message instead of
   a broken install.
-- **Update checks** — the latest tag comes from GitHub's `releases/latest` redirect, which is
-  served outside the API quota, so checking costs 0 of the 60 hourly requests and the cards show
-  live numbers. The API is only touched when an update is actually downloaded, and its response
-  is kept with its ETag and reused if the download step needs it again.
+- **Update checks** — the latest tag comes from GitHub's `releases/latest` redirect, and the
+  files to download come from the release page plus a `HEAD` for their size, so checking and
+  installing both cost 0 of the 60 hourly requests. The API is only used if a release page
+  cannot be read, and its response is cached with its ETag for that case.
 
 Installs and applies go through the normal `spicetify` commands (`spicetify -v`, `config`, `backup`,
 `apply`, `restore`), so behaviour matches the official installers. It is a single file because the

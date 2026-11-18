@@ -13,6 +13,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
@@ -1369,6 +1370,7 @@ namespace SpicetifyUpdater
         private static readonly Dictionary<string, DateTime> ReleaseCacheTime = new Dictionary<string, DateTime>();
         private static readonly Dictionary<string, string> TagCache = new Dictionary<string, string>();
         private static readonly Dictionary<string, DateTime> TagCacheTime = new Dictionary<string, DateTime>();
+        private static readonly Dictionary<string, string> RawTagCache = new Dictionary<string, string>();
 
         // What the last successful lookup returned, plus its ETag, so the next check
         // can ask "still the same?" instead of downloading the release again.
@@ -1443,6 +1445,102 @@ namespace SpicetifyUpdater
             public string Url;
             public long Size;
             public string Digest;
+        }
+
+        private static string RawTag(string repo, string tag)
+        {
+            string raw;
+            if (RawTagCache.TryGetValue(repo, out raw) && !string.IsNullOrEmpty(raw)) return raw;
+            return "v" + tag;
+        }
+
+        // github.com/<repo>/releases/expanded_assets/<tag> lists a release's files as plain
+        // links, and a HEAD request gives their exact size, so an install needs no API quota.
+        private static Asset AssetFromPage(string repo, string tag, Func<string, bool> match)
+        {
+            EnsureTls();
+
+            var rawTag = RawTag(repo, tag);
+            var page = "https://github.com/" + repo + "/releases/expanded_assets/" + Uri.EscapeDataString(rawTag);
+            var html = DownloadText(page);
+            if (html == null) return null;
+
+            var pattern = "href=\"(/" + Regex.Escape(repo) + "/releases/download/" +
+                          Regex.Escape(Uri.EscapeDataString(rawTag)) + "/([^\"/]+))\"";
+            foreach (Match found in Regex.Matches(html, pattern))
+            {
+                var name = Uri.UnescapeDataString(found.Groups[2].Value);
+                if (!match(name)) continue;
+
+                var asset = new Asset { Name = name, Url = "https://github.com" + found.Groups[1].Value };
+                asset.Size = RemoteSize(asset.Url);
+                return asset;
+            }
+
+            return null;
+        }
+
+        // The release page first (no quota), the API second (it also carries the digest).
+        private static Asset AssetFor(string repo, string tag, Func<string, bool> match)
+        {
+            var fromPage = AssetFromPage(repo, tag, match);
+            if (fromPage != null) return fromPage;
+
+            var release = LatestRelease(repo, false);
+            foreach (var asset in release.Assets)
+                if (match(asset.Name)) return asset;
+
+            return null;
+        }
+
+        private static Asset OurAsset(string tag, string suffix)
+        {
+            var name = "Spicetify-Updater-" + tag + "-win-x64" + suffix;
+            var url = "https://github.com/" + SelfRepo + "/releases/download/" +
+                      Uri.EscapeDataString(RawTag(SelfRepo, tag)) + "/" + name;
+
+            var size = RemoteSize(url);
+            if (size <= 0) return null;
+            return new Asset { Name = name, Url = url, Size = size };
+        }
+
+        private static string DownloadText(string url)
+        {
+            try
+            {
+                using (var client = new HttpClient())
+                {
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+                    return client.GetStringAsync(url).GetAwaiter().GetResult();
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // -1 when the file is not there or the size is not advertised.
+        private static long RemoteSize(string url)
+        {
+            try
+            {
+                using (var client = new HttpClient())
+                {
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+                    using (var request = new HttpRequestMessage(HttpMethod.Head, url))
+                    using (var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+                        .GetAwaiter().GetResult())
+                    {
+                        if (!response.IsSuccessStatusCode) return -1;
+                        return response.Content.Headers.ContentLength ?? -1;
+                    }
+                }
+            }
+            catch
+            {
+                return -1;
+            }
         }
 
         private static async Task<Release> LatestReleaseAsync(string repo, bool force)
@@ -1648,9 +1746,12 @@ namespace SpicetifyUpdater
                         var index = url.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
                         if (index >= 0)
                         {
-                            var tag = Uri.UnescapeDataString(url.Substring(index + marker.Length)).Trim('/').TrimStart('v');
+                            var rawTag = Uri.UnescapeDataString(url.Substring(index + marker.Length)).Trim('/');
+                            var tag = rawTag.TrimStart('v');
                             if (tag.Length > 0)
                             {
+                                // Release URLs need the tag exactly as GitHub spells it.
+                                RawTagCache[repo] = rawTag;
                                 TagCache[repo] = tag;
                                 TagCacheTime[repo] = DateTime.Now;
                                 return tag;
@@ -2053,9 +2154,9 @@ namespace SpicetifyUpdater
 
         public static string InstallCli(Action<string> log, Action<double> progress)
         {
-            var release = LatestRelease(CliRepo, true);
-            var asset = release.Assets.FirstOrDefault(a => a.Name.EndsWith("windows-x64.zip", StringComparison.OrdinalIgnoreCase));
-            if (asset == null) throw new InvalidOperationException("No Windows x64 build in release v" + release.Tag);
+            var tag = LatestTag(CliRepo, true);
+            var asset = AssetFor(CliRepo, tag, a => a.EndsWith("windows-x64.zip", StringComparison.OrdinalIgnoreCase));
+            if (asset == null) throw new InvalidOperationException("No Windows x64 build in release v" + tag);
 
             var work = TempDir("spicetify-cli-");
             try
@@ -2084,8 +2185,8 @@ namespace SpicetifyUpdater
                 if (Directory.Exists(LegacyRoot))
                     log("An older install is still in " + LegacyRoot + ", the one in use is " + CliRoot);
 
-                log("Spicetify CLI v" + release.Tag + " installed");
-                return release.Tag;
+                log("Spicetify CLI v" + tag + " installed");
+                return tag;
             }
             finally
             {
@@ -2102,9 +2203,9 @@ namespace SpicetifyUpdater
             var appDir = Path.Combine(userdata, "CustomApps", "marketplace");
             var themeDir = Path.Combine(userdata, "Themes", "marketplace");
 
-            var release = LatestRelease(MarketRepo, true);
-            var asset = release.Assets.FirstOrDefault(a => a.Name.Equals("marketplace.zip", StringComparison.OrdinalIgnoreCase));
-            if (asset == null) asset = release.Assets.FirstOrDefault();
+            var tag = LatestTag(MarketRepo, true);
+            var asset = AssetFor(MarketRepo, tag, a => a.Equals("marketplace.zip", StringComparison.OrdinalIgnoreCase));
+            if (asset == null) asset = AssetFor(MarketRepo, tag, a => true);
             if (asset == null) throw new InvalidOperationException("No marketplace build in the latest release");
 
             var work = TempDir("spicetify-marketplace-");
@@ -2147,9 +2248,9 @@ namespace SpicetifyUpdater
                 if (RunProcess(exe, "apply", log, 300000) != 0)
                     log("spicetify apply returned a non-zero exit code, see the output above");
 
-                File.WriteAllText(Path.Combine(appDir, ".marketplace-version"), release.Tag + Environment.NewLine);
-                log("Marketplace v" + release.Tag + " installed");
-                return release.Tag;
+                File.WriteAllText(Path.Combine(appDir, ".marketplace-version"), tag + Environment.NewLine);
+                log("Marketplace v" + tag + " installed");
+                return tag;
             }
             finally
             {
@@ -2179,24 +2280,33 @@ namespace SpicetifyUpdater
 
         public static string UpdateSelf(Action<string> log, Action<double> progress)
         {
-            var release = LatestRelease(SelfRepo, true);
-            if (Compare(release.Tag, SelfVersion()) <= 0)
+            var tag = LatestTag(SelfRepo, true);
+            if (Compare(tag, SelfVersion()) <= 0)
             {
                 log("No updates found, you are on the latest version (v" + SelfVersion() + ")");
                 return null;
             }
 
             // The setup is preferred: it also refreshes the shortcuts and uninstaller
-            // of an installed copy instead of leaving an orphaned exe behind.
-            var setup = release.Assets.FirstOrDefault(a =>
-                a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
-                a.Name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0);
-            var portable = release.Assets.FirstOrDefault(a =>
-                a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
-                a.Name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) < 0);
-            var asset = setup ?? portable;
+            // of an installed copy instead of leaving an orphaned exe behind. Our own
+            // asset names follow the tag, so the URL is built directly and costs no API calls.
+            var asset = OurAsset(tag, "-setup.exe");
+            var setup = asset != null;
+            if (asset == null) asset = OurAsset(tag, ".exe");
             if (asset == null)
-                throw new InvalidOperationException("Release v" + release.Tag + " has no downloadable exe");
+            {
+                asset = AssetFor(SelfRepo, tag, a =>
+                    a.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                    a.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0);
+                setup = asset != null;
+            }
+            if (asset == null)
+            {
+                asset = AssetFor(SelfRepo, tag, a => a.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+                setup = asset != null && asset.Name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (asset == null)
+                throw new InvalidOperationException("Release v" + tag + " has no downloadable exe");
 
             var download = Path.Combine(Path.GetTempPath(), asset.Name);
             log("Downloading " + asset.Name);
@@ -2205,7 +2315,7 @@ namespace SpicetifyUpdater
 
             var current = Process.GetCurrentProcess().MainModule.FileName;
 
-            if (setup != null)
+            if (setup)
             {
                 // The app closes as soon as this returns, so the setup can replace the
                 // installed copy; it then starts the new version on its own.
@@ -2222,9 +2332,9 @@ namespace SpicetifyUpdater
                 };
                 File.WriteAllText(script, string.Join("\r\n", lines), Encoding.Default);
 
-                log("Running the setup for v" + release.Tag);
+                log("Running the setup for v" + tag);
                 Process.Start(new ProcessStartInfo(script) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
-                return release.Tag;
+                return tag;
             }
 
             // Portable-only release: swap the exe in place.
@@ -2239,7 +2349,7 @@ namespace SpicetifyUpdater
             catch
             {
                 throw new InvalidOperationException(
-                    "The app folder is not writable. Download the setup for v" + release.Tag + " from the release page instead.");
+                    "The app folder is not writable. Download the setup for v" + tag + " from the release page instead.");
             }
 
             var swapScript = Path.Combine(Path.GetTempPath(), "spicetify-updater-swap.cmd");
@@ -2253,9 +2363,9 @@ namespace SpicetifyUpdater
             };
             File.WriteAllText(swapScript, string.Join("\r\n", swapLines), Encoding.Default);
 
-            log("Restarting with v" + release.Tag);
+            log("Restarting with v" + tag);
             Process.Start(new ProcessStartInfo(swapScript) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
-            return release.Tag;
+            return tag;
         }
 
         // Where the per-user Inno Setup install keeps the app ({autopf}\Spicetify Updater).
@@ -2342,7 +2452,11 @@ namespace SpicetifyUpdater
             var expected = Sha256FromDigest(asset.Digest);
             if (expected == null)
             {
-                log("Checked the size of " + asset.Name);
+                // Without a published digest the size is all GitHub given us; when even that
+                // was unavailable, say what actually arrived instead of claiming a check.
+                log(asset.Size > 0
+                    ? "Checked the size of " + asset.Name
+                    : "Downloaded " + file.Length.ToString("N0", CultureInfo.InvariantCulture) + " bytes of " + asset.Name);
                 return;
             }
 
