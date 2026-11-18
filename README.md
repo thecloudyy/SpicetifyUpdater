@@ -37,6 +37,10 @@ instead; if the folder is not writable it says so instead of leaving a half-writ
   Useful when Spotify won't load after an update.
 - **Close Spotify automatically** — stops the client before patching and reopens it afterwards.
 - **Maintenance** — Backup & Apply, Apply, and Restore.
+- **Update checks** — the latest tag comes from GitHub's `releases/latest` redirect, which is
+  served outside the API quota, so checking costs 0 of the 60 hourly requests and the cards show
+  live numbers. The API is only touched when an update is actually downloaded, and its response
+  is kept with its ETag and reused if the download step needs it again.
 
 Installs and applies go through the normal `spicetify` commands (`spicetify -v`, `config`, `backup`,
 `apply`, `restore`), so behaviour matches the official installers. It is a single file because the

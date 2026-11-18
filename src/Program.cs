@@ -1366,7 +1366,20 @@ namespace SpicetifyUpdater
         private const string UserAgent = "SpicetifyUpdater/2.0 (+https://spicetify.app)";
 
         private static readonly Dictionary<string, Release> ReleaseCache = new Dictionary<string, Release>();
-        private static DateTime _cacheTime = DateTime.MinValue;
+        private static readonly Dictionary<string, DateTime> ReleaseCacheTime = new Dictionary<string, DateTime>();
+        private static readonly Dictionary<string, string> TagCache = new Dictionary<string, string>();
+        private static readonly Dictionary<string, DateTime> TagCacheTime = new Dictionary<string, DateTime>();
+
+        // What the last successful lookup returned, plus its ETag, so the next check
+        // can ask "still the same?" instead of downloading the release again.
+        private sealed class CachedRelease
+        {
+            public string ETag;
+            public Release Release;
+        }
+
+        private static readonly Dictionary<string, CachedRelease> DiskReleaseCache = new Dictionary<string, CachedRelease>();
+        private static bool _diskCacheLoaded;
 
         public static string CliRoot
         {
@@ -1425,35 +1438,207 @@ namespace SpicetifyUpdater
         private static async Task<Release> LatestReleaseAsync(string repo, bool force)
         {
             EnsureTls();
-            // GitHub allows 60 anonymous requests an hour, three are used per check.
-            if (!force && ReleaseCache.ContainsKey(repo) && (DateTime.Now - _cacheTime).TotalMinutes < 15)
-                return ReleaseCache[repo];
+
+            if (!force && ReleaseCache.ContainsKey(repo))
+            {
+                DateTime taken;
+                if (ReleaseCacheTime.TryGetValue(repo, out taken) && (DateTime.Now - taken).TotalMinutes < 2)
+                    return ReleaseCache[repo];
+            }
+
+            LoadReleaseCache();
+            CachedRelease cached;
+            DiskReleaseCache.TryGetValue(repo, out cached);
 
             using (var client = new HttpClient())
             {
                 client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
                 client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
-                var json = await client.GetStringAsync("https://api.github.com/repos/" + repo + "/releases/latest");
-                var data = (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(json);
 
-                var release = new Release { Tag = Convert.ToString(data["tag_name"]).TrimStart('v') };
-                foreach (var item in (object[])data["assets"])
+                var request = new HttpRequestMessage(
+                    HttpMethod.Get, "https://api.github.com/repos/" + repo + "/releases/latest");
+                if (cached != null && !string.IsNullOrEmpty(cached.ETag))
+                    request.Headers.TryAddWithoutValidation("If-None-Match", cached.ETag);
+
+                using (var response = await client.SendAsync(request))
                 {
-                    var asset = (Dictionary<string, object>)item;
-                    release.Assets.Add(new KeyValuePair<string, string>(
-                        Convert.ToString(asset["name"]),
-                        Convert.ToString(asset["browser_download_url"])));
+                    // GitHub charges the hourly limit for a 304 too, so this only saves
+                    // bandwidth; version checks go through LatestTag so they cost nothing.
+                    if (response.StatusCode == HttpStatusCode.NotModified && cached != null)
+                    {
+                        ReleaseCache[repo] = cached.Release;
+                        ReleaseCacheTime[repo] = DateTime.Now;
+                        return cached.Release;
+                    }
+
+                    response.EnsureSuccessStatusCode();
+
+                    var release = ParseRelease(await response.Content.ReadAsStringAsync());
+                    SaveReleaseCache(repo, response.Headers.ETag != null ? response.Headers.ETag.Tag : null, release);
+                    ReleaseCache[repo] = release;
+                    ReleaseCacheTime[repo] = DateTime.Now;
+                    return release;
+                }
+            }
+        }
+
+        private static Release ParseRelease(string json)
+        {
+            var data = (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(json);
+            var release = new Release { Tag = Convert.ToString(data["tag_name"]).TrimStart('v') };
+            foreach (var item in (object[])data["assets"])
+            {
+                var asset = (Dictionary<string, object>)item;
+                release.Assets.Add(new KeyValuePair<string, string>(
+                    Convert.ToString(asset["name"]),
+                    Convert.ToString(asset["browser_download_url"])));
+            }
+
+            return release;
+        }
+
+        private static string ReleaseCachePath
+        {
+            get
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "SpicetifyUpdater", "releases.json");
+            }
+        }
+
+        private static void LoadReleaseCache()
+        {
+            if (_diskCacheLoaded) return;
+            _diskCacheLoaded = true;
+
+            try
+            {
+                if (!File.Exists(ReleaseCachePath)) return;
+
+                var data = (Dictionary<string, object>)new JavaScriptSerializer()
+                    .DeserializeObject(File.ReadAllText(ReleaseCachePath));
+                foreach (var entry in data)
+                {
+                    var item = (Dictionary<string, object>)entry.Value;
+                    var release = new Release { Tag = Convert.ToString(item["tag"]) };
+                    object assets;
+                    if (item.TryGetValue("assets", out assets) && assets != null)
+                    {
+                        foreach (var pair in (object[])assets)
+                        {
+                            var fields = (object[])pair;
+                            release.Assets.Add(new KeyValuePair<string, string>(
+                                Convert.ToString(fields[0]), Convert.ToString(fields[1])));
+                        }
+                    }
+
+                    var etag = item.ContainsKey("etag") ? Convert.ToString(item["etag"]) : null;
+                    DiskReleaseCache[entry.Key] = new CachedRelease { ETag = etag, Release = release };
+                }
+            }
+            catch
+            {
+                // A damaged cache only means the next check is a normal full request.
+                DiskReleaseCache.Clear();
+            }
+        }
+
+        private static void SaveReleaseCache(string repo, string etag, Release release)
+        {
+            DiskReleaseCache[repo] = new CachedRelease { ETag = etag, Release = release };
+
+            try
+            {
+                var data = new Dictionary<string, object>();
+                foreach (var entry in DiskReleaseCache)
+                {
+                    var assets = new List<object>();
+                    foreach (var asset in entry.Value.Release.Assets)
+                        assets.Add(new object[] { asset.Key, asset.Value });
+
+                    data[entry.Key] = new Dictionary<string, object>
+                    {
+                        { "etag", entry.Value.ETag },
+                        { "tag", entry.Value.Release.Tag },
+                        { "assets", assets.ToArray() }
+                    };
                 }
 
-                ReleaseCache[repo] = release;
-                _cacheTime = DateTime.Now;
-                return release;
+                var dir = Path.GetDirectoryName(ReleaseCachePath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                File.WriteAllText(ReleaseCachePath, new JavaScriptSerializer().Serialize(data));
+            }
+            catch
+            {
+                // Caching is an optimisation; failing to write it must never surface.
             }
         }
 
         private static Release LatestRelease(string repo, bool force)
         {
             return LatestReleaseAsync(repo, force).GetAwaiter().GetResult();
+        }
+
+        private static string LatestTag(string repo, bool force)
+        {
+            return LatestTagAsync(repo, force).GetAwaiter().GetResult();
+        }
+
+        // github.com/releases/latest redirects to the newest tag and is served outside the
+        // API quota, so a version check costs nothing even when the hourly limit is gone.
+        // The API is only needed for asset lists, which happens when something is installed.
+        private static async Task<string> LatestTagAsync(string repo, bool force)
+        {
+            EnsureTls();
+
+            if (!force && TagCache.ContainsKey(repo))
+            {
+                DateTime taken;
+                if (TagCacheTime.TryGetValue(repo, out taken) && (DateTime.Now - taken).TotalMinutes < 2)
+                    return TagCache[repo];
+            }
+
+            using (var handler = new HttpClientHandler { AllowAutoRedirect = false })
+            using (var client = new HttpClient(handler))
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+
+                using (var response = await client.GetAsync(
+                    "https://github.com/" + repo + "/releases/latest", HttpCompletionOption.ResponseHeadersRead))
+                {
+                    var location = response.Headers.Location;
+                    if (location != null)
+                    {
+                        var url = location.OriginalString;
+                        const string marker = "/releases/tag/";
+                        var index = url.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                        if (index >= 0)
+                        {
+                            var tag = Uri.UnescapeDataString(url.Substring(index + marker.Length)).Trim('/').TrimStart('v');
+                            if (tag.Length > 0)
+                            {
+                                TagCache[repo] = tag;
+                                TagCacheTime[repo] = DateTime.Now;
+                                return tag;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // github.com did not redirect; the API can still answer.
+            var release = await LatestReleaseAsync(repo, force);
+            TagCache[repo] = release.Tag;
+            TagCacheTime[repo] = DateTime.Now;
+            return release.Tag;
+        }
+
+        private static bool IsRateLimitError(Exception ex)
+        {
+            var message = ex == null ? "" : (ex.Message ?? "");
+            return message.IndexOf("403", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("rate limit", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /* ------------------------------------------------ last known versions */
@@ -1547,15 +1732,31 @@ namespace SpicetifyUpdater
             status.MarketplaceInstalled = File.Exists(Path.Combine(status.MarketplacePath, "manifest.json"));
             if (status.MarketplaceInstalled) status.MarketplaceVersion = ReadMarketplaceVersion(userdata);
 
-            try
+            // Once GitHub says the hourly limit is gone, asking twice more only wastes
+            // time, so the other two lookups fall back to what we already know.
+            var blocked = false;
+
+            string cliLookup = null;
+            if (!blocked)
             {
-                var cli = LatestRelease(CliRepo, force);
-                status.CliLatest = cli.Tag;
-                SaveKnownVersion("cli", cli.Tag);
+                try
+                {
+                    cliLookup = LatestTag(CliRepo, force);
+                }
+                catch (Exception ex)
+                {
+                    status.ReleaseError = ex.Message;
+                    blocked = IsRateLimitError(ex);
+                }
             }
-            catch (Exception ex)
+
+            if (cliLookup != null)
             {
-                status.ReleaseError = ex.Message;
+                status.CliLatest = cliLookup;
+                SaveKnownVersion("cli", cliLookup);
+            }
+            else
+            {
                 // GitHub is sometimes rate limited or offline; stale numbers beat "-".
                 status.CliLatest = KnownVersion("cli");
                 status.VersionsFromCache = !string.IsNullOrEmpty(status.CliLatest);
@@ -1564,15 +1765,27 @@ namespace SpicetifyUpdater
             status.CliUpdate = status.CliInstalled && !string.IsNullOrEmpty(status.CliVersion) &&
                 !string.IsNullOrEmpty(status.CliLatest) && Compare(status.CliLatest, status.CliVersion) > 0;
 
-            try
+            string marketLookup = null;
+            if (!blocked)
             {
-                var market = LatestRelease(MarketRepo, force);
-                status.MarketplaceLatest = market.Tag;
-                SaveKnownVersion("marketplace", market.Tag);
+                try
+                {
+                    marketLookup = LatestTag(MarketRepo, force);
+                }
+                catch (Exception ex)
+                {
+                    if (status.ReleaseError == null) status.ReleaseError = ex.Message;
+                    blocked = IsRateLimitError(ex);
+                }
             }
-            catch (Exception ex)
+
+            if (marketLookup != null)
             {
-                if (status.ReleaseError == null) status.ReleaseError = ex.Message;
+                status.MarketplaceLatest = marketLookup;
+                SaveKnownVersion("marketplace", marketLookup);
+            }
+            else
+            {
                 status.MarketplaceLatest = KnownVersion("marketplace");
                 status.VersionsFromCache = status.VersionsFromCache || !string.IsNullOrEmpty(status.MarketplaceLatest);
             }
@@ -1585,16 +1798,32 @@ namespace SpicetifyUpdater
                 Compare(status.MarketplaceLatest, status.MarketplaceVersion) > 0;
 
             status.SelfVersion = SelfVersion();
-            try
+            string selfLookup = null;
+            if (!blocked)
             {
-                var self = LatestRelease(SelfRepo, force);
-                status.SelfLatest = self.Tag;
-                status.SelfUpdate = Compare(status.SelfLatest, status.SelfVersion) > 0;
+                try
+                {
+                    selfLookup = LatestTag(SelfRepo, force);
+                }
+                catch (Exception ex)
+                {
+                    if (status.ReleaseError == null) status.ReleaseError = ex.Message;
+                }
             }
-            catch (Exception ex)
+
+            if (selfLookup != null)
             {
-                if (status.ReleaseError == null) status.ReleaseError = ex.Message;
+                status.SelfLatest = selfLookup;
+                SaveKnownVersion("updater", selfLookup);
             }
+            else
+            {
+                status.SelfLatest = KnownVersion("updater");
+                status.VersionsFromCache = status.VersionsFromCache || !string.IsNullOrEmpty(status.SelfLatest);
+            }
+
+            status.SelfUpdate = !string.IsNullOrEmpty(status.SelfLatest) &&
+                Compare(status.SelfLatest, status.SelfVersion) > 0;
 
             return status;
         }
