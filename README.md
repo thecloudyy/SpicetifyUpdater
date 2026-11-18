@@ -79,11 +79,16 @@ That writes `dist\Spicetify-Updater-<version>-win-x64-setup.exe`.
 powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2
 ```
 
-Bumps the three version fields, builds the exe and the installer, runs the checks, and only then
-creates the release: portable exe, setup, and `SHA256SUMS.txt` uploaded last so it always describes
-files that are already attached. It also verifies the uploaded sizes and re-downloads the checksum
-file to compare it. Add `-Notes "…"` for the release body, or `-DryRun` to do everything except
-commit, push and publish.
+Bumps the three version fields, builds the exe and the installer, runs the checks, commits and
+pushes, then publishes through a draft: the portable exe, the setup and `SHA256SUMS.txt` are
+uploaded in that order (checksums last, so the file only ever describes attachments that already
+exist), the uploaded sizes are verified, and only then is the release published, after which the
+published checksum file is downloaded and compared. A failure before that last step leaves no tag
+and nothing public, so the same command can simply be run again.
+
+`-Notes "…"` sets the release body. `-DryRun` stops after the checksums are written; `-DraftOnly`
+also uploads to a throwaway draft, verifies it and deletes it, which exercises the publish half
+without announcing anything.
 
 To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with a PNG payload.
 

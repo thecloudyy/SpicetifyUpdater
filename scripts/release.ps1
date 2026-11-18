@@ -15,19 +15,18 @@ param(
 # hidden, and only then is it published. A failure in that half leaves nothing public and no
 # tag, so the same command can simply be run again.
 #
-# -DryRun stops after the local builds and checksums; -DraftOnly also creates a draft, uploads
-# to it, verifies the assets and deletes the draft, which exercises the publish half for real
-# without announcing anything.
+# -DryRun stops after the local builds and checksums; -DraftOnly also uploads to a throwaway
+# draft, verifies it and deletes it, which exercises the publish half for real.
 #
-# Needs a token with release access, from GH_TOKEN, `gh auth token`, or a stored git credential.
+# Needs a token with release access, from GH_TOKEN or a stored git credential for github.com.
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $repo = 'thecloudyy/SpicetifyUpdater'
-$portableName = "Spicetify-Updater-$Version-win-x64.exe"
-$setupName = "Spicetify-Updater-$Version-win-x64-setup.exe"
-$checksumName = 'SHA256SUMS.txt'
+$portable = Join-Path $root "dist\Spicetify-Updater-$Version-win-x64.exe"
+$setup = Join-Path $root "dist\Spicetify-Updater-$Version-win-x64-setup.exe"
+$checksumPath = Join-Path $root 'dist\SHA256SUMS.txt'
 
 function Step([string]$text) {
     Write-Host ''
@@ -41,15 +40,6 @@ function Fail([string]$text) {
     exit 1
 }
 
-function Read-Setting([string]$path, [string]$pattern, [string]$label) {
-    if (-not (Test-Path $path)) { throw "${label}: file not found at $path" }
-
-    $match = [regex]::Match((Get-Content $path -Raw), $pattern)
-    if (-not $match.Success) { throw "${label}: not found in $path" }
-
-    return $match.Groups[1].Value.Trim()
-}
-
 function Set-Setting([string]$path, [string]$pattern, [string]$value) {
     $text = Get-Content $path -Raw
     $updated = [regex]::Replace($text, $pattern, $value)
@@ -61,17 +51,11 @@ function Set-Setting([string]$path, [string]$pattern, [string]$value) {
 function Get-Token {
     if ($env:GH_TOKEN) { return $env:GH_TOKEN.Trim() }
 
-    $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if ($gh) {
-        $token = & gh auth token 2>$null
-        if ($token) { return $token.Trim() }
-    }
-
     $lines = "protocol=https`nhost=github.com`n`n" | & git credential fill 2>$null
     $password = $lines | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
     if ($password) { return $password.Substring('password='.Length).Trim() }
 
-    Fail 'no GitHub token: set GH_TOKEN, run "gh auth login", or store a credential for github.com'
+    Fail 'no GitHub token: set GH_TOKEN or store a credential for github.com'
 }
 
 function Get-Iscc {
@@ -94,6 +78,10 @@ function New-Header([string]$token) {
     }
 }
 
+function Read-Release($headers, [string]$id) {
+    return Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$id" -Headers $headers
+}
+
 function New-Draft($headers, [string]$sha) {
     return Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
         -Headers $headers -ContentType 'application/json' -Body (@{
@@ -106,19 +94,19 @@ function New-Draft($headers, [string]$sha) {
         } | ConvertTo-Json)
 }
 
-function Add-Assets($headers, [int64]$releaseId, [string]$portable, [string]$setup, [string]$checksums) {
-    foreach ($item in @(
-            @($portable, 'Portable app (no install)'),
-            @($setup, 'Windows installer (Inno Setup)'),
-            # Last on purpose: the checksum file only ever describes files already uploaded.
-            @($checksums, 'SHA-256 checksums'))) {
-        $path = $item[0]
-        $name = [IO.Path]::GetFileName($path)
-        $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
-               "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($item[1]))"
-        $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
-        Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
-    }
+function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) {
+    $name = [IO.Path]::GetFileName($path)
+    $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
+           "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($label))"
+    $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
+    Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
+}
+
+function Add-Assets($headers, [int64]$releaseId) {
+    Send-Asset $headers $releaseId $portable 'Portable app (no install)'
+    Send-Asset $headers $releaseId $setup 'Windows installer (Inno Setup)'
+    # Last on purpose: the checksum file only ever describes files already uploaded.
+    Send-Asset $headers $releaseId $checksumPath 'SHA-256 checksums'
 }
 
 function Assert-Assets($release, [hashtable]$expected) {
@@ -154,7 +142,8 @@ try {
     & git ls-remote --exit-code --tags origin "refs/tags/v$Version" *> $null
     if ($LASTEXITCODE -eq 0) { Fail "tag v$Version already exists on origin" }
 
-    $current = Read-Setting (Join-Path $root 'SpicetifyUpdater.csproj') '<Version>([^<]+)</Version>' 'csproj Version'
+    $project = Join-Path $root 'SpicetifyUpdater.csproj'
+    $current = [regex]::Match((Get-Content $project -Raw), '<Version>([^<]+)</Version>').Groups[1].Value.Trim()
     if (([version]$Version).CompareTo([version]$current) -le 0) {
         Fail "version $Version is not newer than the current $current"
     }
@@ -165,7 +154,6 @@ try {
     Write-Host "  ok    $current -> $Version on $branch, token available"
 
     Step 'bump'
-    $project = Join-Path $root 'SpicetifyUpdater.csproj'
     Set-Setting $project '<Version>[^<]+</Version>' "<Version>$Version</Version>"
     Set-Setting $project '<AssemblyVersion>[^<]+</AssemblyVersion>' "<AssemblyVersion>$Version.0</AssemblyVersion>"
     Set-Setting $project '<FileVersion>[^<]+</FileVersion>' "<FileVersion>$Version.0</FileVersion>"
@@ -181,18 +169,10 @@ try {
     if ($built -notlike "$Version.*") { Fail "the built exe reports $built, expected $Version" }
 
     Step 'installer'
-    $dist = Join-Path $root 'dist'
-    New-Item -ItemType Directory -Force -Path $dist | Out-Null
-    $portable = Join-Path $dist $portableName
-    $setup = Join-Path $dist $setupName
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'dist') | Out-Null
     Copy-Item $app $portable -Force
-
     & (Get-Iscc) installer.iss
     if ($LASTEXITCODE -ne 0) { Fail 'ISCC failed' }
-    foreach ($file in $portable, $setup) {
-        if (-not (Test-Path $file)) { Fail "expected build output missing: $file" }
-        Write-Host ("  ok    {0} ({1:N0} bytes)" -f (Split-Path -Leaf $file), (Get-Item $file).Length)
-    }
 
     Step 'checks'
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\run-checks.ps1')
@@ -206,13 +186,12 @@ try {
         "$hash  $(Split-Path -Leaf $file)"
     }
     $checksumText = ($lines -join "`n") + "`n"
-    $checksumPath = Join-Path $dist $checksumName
     [IO.File]::WriteAllText($checksumPath, $checksumText)
 
     $expected = @{}
-    $expected[$portableName] = (Get-Item $portable).Length
-    $expected[$setupName] = (Get-Item $setup).Length
-    $expected[$checksumName] = (Get-Item $checksumPath).Length
+    foreach ($file in $portable, $setup, $checksumPath) {
+        $expected[(Split-Path -Leaf $file)] = (Get-Item $file).Length
+    }
 
     if ($DryRun) {
         Step 'dry run'
@@ -227,8 +206,8 @@ try {
         Step 'draft check'
         $release = New-Draft $headers (git rev-parse HEAD).Trim()
         try {
-            Add-Assets $headers $release.id $portable $setup $checksumPath
-            Assert-Assets (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers) $expected
+            Add-Assets $headers $release.id
+            Assert-Assets (Read-Release $headers $release.id) $expected
             Write-Host '  ok    a draft release and its uploads work'
         }
         finally {
@@ -255,10 +234,10 @@ try {
         Write-Host "  ok    draft $($release.id)"
 
         Step 'upload'
-        Add-Assets $headers $release.id $portable $setup $checksumPath
+        Add-Assets $headers $release.id
 
         Step 'verify draft'
-        Assert-Assets (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers) $expected
+        Assert-Assets (Read-Release $headers $release.id) $expected
 
         Step 'publish'
         $published = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" `
@@ -267,11 +246,11 @@ try {
         Write-Host "  ok    published $($published.html_url)"
 
         Step 'verify published'
-        $live = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/v$Version" -Headers $headers
+        $live = Read-Release $headers "tags/v$Version"
         Assert-Assets $live $expected
-
-        $checksumAsset = $live.assets | Where-Object { $_.name -eq $checksumName }
-        $downloaded = (Invoke-WebRequest -Uri $checksumAsset.browser_download_url -Headers $headers -UseBasicParsing).Content
+        $checksumUrl = $live.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } |
+            Select-Object -ExpandProperty browser_download_url
+        $downloaded = (Invoke-WebRequest -Uri $checksumUrl -Headers $headers -UseBasicParsing).Content
         if ($downloaded.Trim() -ne $checksumText.Trim()) { throw 'the published checksum file does not match the built files' }
         Write-Host '  ok    published checksums match the uploaded files'
     }
