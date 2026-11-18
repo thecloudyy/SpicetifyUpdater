@@ -102,11 +102,19 @@ try {
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne 'main') { Fail "releases are cut from main, this checkout is on $branch" }
 
-    git fetch --tags --quiet
+    git fetch origin main --quiet
     if ($LASTEXITCODE -ne 0) { Fail 'git fetch failed' }
 
-    & git rev-parse -q --verify "refs/tags/v$Version" > $null 2>&1
-    if ($LASTEXITCODE -eq 0) { Fail "tag v$Version already exists" }
+    $ahead = (git rev-list --count 'origin/main..HEAD').Trim()
+    $behind = (git rev-list --count 'HEAD..origin/main').Trim()
+    if ($ahead -ne '0' -or $behind -ne '0') {
+        Fail "main is $ahead commit(s) ahead and $behind behind origin/main, push or pull first"
+    }
+
+    # Ask origin rather than the local clone, so a stale local tag can neither block a
+    # release nor let one be cut for a version that already exists.
+    & git ls-remote --exit-code --tags origin "refs/tags/v$Version" *> $null
+    if ($LASTEXITCODE -eq 0) { Fail "tag v$Version already exists on origin" }
 
     $current = Read-Setting (Join-Path $root 'SpicetifyUpdater.csproj') '<Version>([^<]+)</Version>' 'csproj Version'
     $newer = ([version]$Version).CompareTo([version]$current)
