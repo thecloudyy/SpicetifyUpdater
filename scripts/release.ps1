@@ -12,11 +12,12 @@ param(
 #   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2 -DraftOnly
 #
 # The release is created as a draft, the files are uploaded and verified while it is still
-# hidden, and only then is it published. A failure in that half leaves nothing public and no
-# tag, so the same command can simply be run again.
+# hidden, and only then is it published. Anything that goes wrong before that point removes the
+# draft again, so nothing is public, no tag exists, and the same command can simply be re-run.
 #
-# -DryRun stops after the local builds and checksums; -DraftOnly also uploads to a throwaway
-# draft, verifies it and deletes it, which exercises the publish half for real.
+# -DryRun stops after the local builds and checksums; -DraftOnly goes on to upload to the draft
+# and verify it, then removes it, which exercises the publish half for real. -DryRun wins if
+# both are given.
 #
 # Needs a token with release access, from GH_TOKEN or a stored git credential for github.com.
 
@@ -26,18 +27,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $repo = 'thecloudyy/SpicetifyUpdater'
 $portable = Join-Path $root "dist\Spicetify-Updater-$Version-win-x64.exe"
 $setup = Join-Path $root "dist\Spicetify-Updater-$Version-win-x64-setup.exe"
-$checksumPath = Join-Path $root 'dist\SHA256SUMS.txt'
+$checksumName = 'SHA256SUMS.txt'
+$checksumPath = Join-Path $root "dist\$checksumName"
 
 function Step([string]$text) {
     Write-Host ''
     Write-Host "== $text"
-}
-
-function Fail([string]$text) {
-    Write-Host "  FAIL  $text"
-    Write-Host ''
-    Write-Host 'RELEASE ABORTED'
-    exit 1
 }
 
 function Set-Setting([string]$path, [string]$pattern, [string]$value) {
@@ -55,7 +50,7 @@ function Get-Token {
     $password = $lines | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
     if ($password) { return $password.Substring('password='.Length).Trim() }
 
-    Fail 'no GitHub token: set GH_TOKEN or store a credential for github.com'
+    throw 'no GitHub token: set GH_TOKEN or store a credential for github.com'
 }
 
 function Get-Iscc {
@@ -67,15 +62,7 @@ function Get-Iscc {
     $found = Get-Command iscc -ErrorAction SilentlyContinue
     if ($found) { return $found.Source }
 
-    Fail 'ISCC.exe not found: install Inno Setup 6 or 7, or put iscc on PATH'
-}
-
-function New-Header([string]$token) {
-    return @{
-        Authorization = "token $token"
-        Accept        = 'application/vnd.github+json'
-        'User-Agent'  = 'SpicetifyUpdater-release'
-    }
+    throw 'ISCC.exe not found: install Inno Setup 6 or 7, or put iscc on PATH'
 }
 
 function Read-Release($headers, [string]$id) {
@@ -126,13 +113,6 @@ function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) 
     Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
 }
 
-function Add-Assets($headers, [int64]$releaseId) {
-    Send-Asset $headers $releaseId $portable 'Portable app (no install)'
-    Send-Asset $headers $releaseId $setup 'Windows installer (Inno Setup)'
-    # Last on purpose: the checksum file only ever describes files already uploaded.
-    Send-Asset $headers $releaseId $checksumPath 'SHA-256 checksums'
-}
-
 function Assert-Assets($release, [hashtable]$expected) {
     foreach ($name in $expected.Keys) {
         $asset = $release.assets | Where-Object { $_.name -eq $name }
@@ -146,33 +126,38 @@ function Assert-Assets($release, [hashtable]$expected) {
 
 $bumped = $false
 $committed = $false
+$release = $null
+$published = $null
+$ok = $true
 
 Push-Location $root
 try {
     Step 'preconditions'
-    if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "version must look like 1.0.2, got '$Version'" }
-    if ((git status --porcelain)) { Fail 'the working tree has changes, commit or stash them first' }
+    if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "version must look like 1.0.2, got '$Version'" }
+    if ((git status --porcelain)) { throw 'the working tree has changes, commit or stash them first' }
 
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
-    if ($branch -ne 'main') { Fail "releases are cut from main, this checkout is on $branch" }
+    if ($branch -ne 'main') { throw "releases are cut from main, this checkout is on $branch" }
 
     git fetch origin main --quiet
-    if ($LASTEXITCODE -ne 0) { Fail 'git fetch failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
 
     $ahead = (git rev-list --count 'origin/main..HEAD').Trim()
     $behind = (git rev-list --count 'HEAD..origin/main').Trim()
     if ($ahead -ne '0' -or $behind -ne '0') {
-        Fail "main is $ahead commit(s) ahead and $behind behind origin/main, push or pull first"
+        throw "main is $ahead commit(s) ahead and $behind behind origin/main, push or pull first"
     }
 
     # Ask origin, not the local clone, so a stale local tag cannot block or fake a release.
     & git ls-remote --exit-code --tags origin "refs/tags/v$Version" *> $null
-    if ($LASTEXITCODE -eq 0) { Fail "tag v$Version already exists on origin" }
+    if ($LASTEXITCODE -eq 0) { throw "tag v$Version already exists on origin" }
 
     $project = Join-Path $root 'SpicetifyUpdater.csproj'
-    $current = [regex]::Match((Get-Content $project -Raw), '<Version>([^<]+)</Version>').Groups[1].Value.Trim()
+    $declared = [regex]::Match((Get-Content $project -Raw), '<Version>([^<]+)</Version>')
+    if (-not $declared.Success) { throw 'no <Version> in SpicetifyUpdater.csproj' }
+    $current = $declared.Groups[1].Value.Trim()
     if (([version]$Version).CompareTo([version]$current) -le 0) {
-        Fail "version $Version is not newer than the current $current"
+        throw "version $Version is not newer than the current $current"
     }
 
     # Resolved here rather than at publish time: a missing token must not be discovered
@@ -190,21 +175,21 @@ try {
 
     Step 'build'
     & dotnet build SpicetifyUpdater.csproj -c Release -v q
-    if ($LASTEXITCODE -ne 0) { Fail 'dotnet build failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed' }
 
     $app = Join-Path $root 'bin\Release\Spicetify-Updater.exe'
     $built = (Get-Item $app).VersionInfo.FileVersion
-    if ($built -notlike "$Version.*") { Fail "the built exe reports $built, expected $Version" }
+    if ($built -notlike "$Version.*") { throw "the built exe reports $built, expected $Version" }
 
     Step 'installer'
     New-Item -ItemType Directory -Force -Path (Join-Path $root 'dist') | Out-Null
     Copy-Item $app $portable -Force
     & (Get-Iscc) installer.iss
-    if ($LASTEXITCODE -ne 0) { Fail 'ISCC failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
 
     Step 'checks'
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\run-checks.ps1')
-    if ($LASTEXITCODE -ne 0) { Fail 'the checks failed, nothing was published' }
+    if ($LASTEXITCODE -ne 0) { throw 'the checks failed, nothing was published' }
     Write-Host '  ok    checks passed'
 
     Step 'checksums'
@@ -216,107 +201,90 @@ try {
     $checksumText = ($lines -join "`n") + "`n"
     [IO.File]::WriteAllText($checksumPath, $checksumText)
 
-    $expected = @{}
-    foreach ($file in $portable, $setup, $checksumPath) {
-        $expected[(Split-Path -Leaf $file)] = (Get-Item $file).Length
-    }
-
     if ($DryRun) {
         Step 'dry run'
         Write-Host '  nothing committed or published'
         exit 0
     }
 
-    $headers = New-Header $token
+    $expected = @{}
+    foreach ($file in $portable, $setup, $checksumPath) {
+        $expected[(Split-Path -Leaf $file)] = (Get-Item $file).Length
+    }
+
+    $headers = @{
+        Authorization = "token $token"
+        Accept        = 'application/vnd.github+json'
+        'User-Agent'  = 'SpicetifyUpdater-release'
+    }
+
+    # The draft has to point at the release commit, so it is created after the commit is pushed.
+    if (-not $DraftOnly) {
+        Step 'commit'
+        git add SpicetifyUpdater.csproj installer.iss
+        git commit -m "Release $Version" -m "Published by scripts/release.ps1."
+        if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
+        $committed = $true
+        git push origin main
+        if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
+    }
+
+    Step 'draft release'
+    $release = New-Draft $headers (git rev-parse HEAD).Trim()
+    Write-Host "  ok    draft $($release.id)"
+    Send-Asset $headers $release.id $portable 'Portable app (no install)'
+    Send-Asset $headers $release.id $setup 'Windows installer (Inno Setup)'
+    # Last on purpose: the checksum file only ever describes files already uploaded.
+    Send-Asset $headers $release.id $checksumPath 'SHA-256 checksums'
+    Assert-Assets (Read-Release $headers $release.id) $expected
 
     if ($DraftOnly) {
-        Step 'draft check'
-        $release = $null
-        $failed = $false
-        try {
-            $release = New-Draft $headers (git rev-parse HEAD).Trim()
-            Add-Assets $headers $release.id
-            Assert-Assets (Read-Release $headers $release.id) $expected
-            Write-Host '  ok    a draft release and its uploads work'
-        }
-        catch {
-            $failed = $true
-            Write-Host "  FAIL  $($_.Exception.Message)"
-            Write-Host ''
-            Write-Host 'RELEASE ABORTED'
-        }
-        finally {
-            # A draft that was never created cannot be deleted, and a failed creation must not
-            # hide the original error behind a second one.
-            if ($release) {
-                # Best effort: a delete that fails here must not replace the error that got us here.
-                try {
-                    Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
-                    Write-Host '  draft deleted, nothing published'
-                }
-                catch {
-                    Write-Host "  draft $($release.id) is still there, remove it at https://github.com/$repo/releases"
-                }
-            }
-            else {
-                Write-Host '  no draft was created, nothing published'
-            }
-        }
-
-        if ($failed) { exit 1 }
+        Write-Host '  ok    a draft release and its uploads work'
         exit 0
     }
 
-    Step 'commit'
-    git add SpicetifyUpdater.csproj installer.iss
-    git commit -m "Release $Version" -m "Published by scripts/release.ps1."
-    if ($LASTEXITCODE -ne 0) { Fail 'git commit failed' }
-    $committed = $true
-    git push origin main
-    if ($LASTEXITCODE -ne 0) { Fail 'git push failed' }
+    Step 'publish'
+    $published = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" `
+        -Headers $headers -ContentType 'application/json' -Body (@{ draft = $false } | ConvertTo-Json)
+    if ($published.draft) { throw 'the release is still a draft' }
+    Write-Host "  ok    published $($published.html_url)"
 
-    # From here the release is a draft until everything has been uploaded and verified, so a
-    # failure leaves nothing public and no tag, and the command can just be run again.
-    $release = $null
-    try {
-        Step 'draft release'
-        $release = New-Draft $headers (git rev-parse HEAD).Trim()
-        Write-Host "  ok    draft $($release.id)"
-
-        Step 'upload'
-        Add-Assets $headers $release.id
-
-        Step 'verify draft'
-        Assert-Assets (Read-Release $headers $release.id) $expected
-
-        Step 'publish'
-        $published = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" `
-            -Headers $headers -ContentType 'application/json' -Body (@{ draft = $false } | ConvertTo-Json)
-        if ($published.draft) { throw 'the release is still a draft' }
-        Write-Host "  ok    published $($published.html_url)"
-
-        Step 'verify published'
-        $live = Read-Release $headers "tags/v$Version"
-        Assert-Assets $live $expected
-        $checksumUrl = $live.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } |
-            Select-Object -ExpandProperty browser_download_url
-        $downloaded = (Invoke-WebRequest -Uri $checksumUrl -Headers $headers -UseBasicParsing).Content
-        if ($downloaded.Trim() -ne $checksumText.Trim()) { throw 'the published checksum file does not match the built files' }
-        Write-Host '  ok    published checksums match the uploaded files'
-    }
-    catch {
-        Write-Host "  FAIL  $($_.Exception.Message)"
-        if ($release) { Write-Host "  nothing is public: draft $($release.id) at https://github.com/$repo/releases" }
-        Write-Host ''
-        Write-Host 'RELEASE ABORTED'
-        exit 1
-    }
+    Step 'verify published'
+    $live = Read-Release $headers "tags/v$Version"
+    Assert-Assets $live $expected
+    $checksumUrl = $live.assets | Where-Object { $_.name -eq $checksumName } |
+        Select-Object -ExpandProperty browser_download_url
+    $downloaded = (Invoke-WebRequest -Uri $checksumUrl -Headers $headers -UseBasicParsing).Content
+    if ($downloaded.Trim() -ne $checksumText.Trim()) { throw 'the published checksum file does not match the built files' }
+    Write-Host '  ok    published checksums match the uploaded files'
 
     Step 'done'
     Write-Host "  v$Version is published: $($published.html_url)"
     exit 0
 }
+catch {
+    Write-Host "  FAIL  $($_.Exception.Message)"
+    if ($published) { Write-Host "  the release is public: $($published.html_url)" }
+    $ok = $false
+}
 finally {
+    # A draft is safe to remove; a published release is not, and a lost response from the publish
+    # call could have published it, so ask before deleting.
+    if ($release -and -not $published) {
+        try {
+            if ((Read-Release $headers $release.id).draft) {
+                Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
+                Write-Host '  draft deleted, nothing published'
+            }
+            else {
+                Write-Host "  the release is public: https://github.com/$repo/releases"
+            }
+        }
+        catch {
+            Write-Host "  draft $($release.id) is still there: https://github.com/$repo/releases"
+        }
+    }
+
     # A bump that never became a commit must not leave the checkout dirty, or the retry this
     # script promises is rejected by its own clean-tree check.
     if ($bumped -and -not $committed) {
@@ -325,4 +293,10 @@ finally {
     }
 
     Pop-Location
+}
+
+if (-not $ok) {
+    Write-Host ''
+    Write-Host 'RELEASE ABORTED'
+    exit 1
 }
