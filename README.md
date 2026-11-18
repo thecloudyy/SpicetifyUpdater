@@ -72,12 +72,25 @@ That writes `dist\Spicetify-Updater-Setup-<version>.exe`.
 
 To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with a PNG payload.
 
+## Checks
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/run-checks.ps1
+```
+
+Builds the app, compiles `scripts/Checks.cs` against the built exe and runs it: checksum-file
+parsing, download verification (size, sha256, empty and missing files), archive integrity, the
+cache-tag rule, then live lookups against GitHub plus a real download from a release, and finally
+`--selftest`. It exits non-zero on the first failure and needs no credentials.
+
 ## Layout
 
 - `src/Program.cs` — the whole app: WPF UI, GitHub lookups, downloads, zip extraction and the
   spicetify commands
 - `SpicetifyUpdater.csproj` — `net48`, `WinExe`
 - `build/` — app icon
+- `scripts/` — `run-checks.ps1` and `Checks.cs` (the checks above), `add_checksums.py` (publishes
+  `SHA256SUMS.txt` for a release)
 
 Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
 `--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the
