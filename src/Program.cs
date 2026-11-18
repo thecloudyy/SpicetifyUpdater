@@ -1480,7 +1480,9 @@ namespace SpicetifyUpdater
             var fromPage = AssetFromPage(repo, tag, match);
             if (fromPage != null) return fromPage;
 
-            var release = LatestRelease(repo, false);
+            var release = LatestRelease(repo, tag, false);
+            if (!string.Equals(release.Tag, tag, StringComparison.OrdinalIgnoreCase)) return null;
+
             foreach (var asset in release.Assets)
                 if (match(asset.Name)) return asset;
 
@@ -1537,7 +1539,9 @@ namespace SpicetifyUpdater
             }
         }
 
-        private static async Task<Release> LatestReleaseAsync(string repo, bool force)
+        // "tag" is the release the caller is about to install, and only a cache entry for
+        // that exact tag may stand in for the API, so a stale cache never serves old files.
+        private static async Task<Release> LatestReleaseAsync(string repo, string tag, bool force)
         {
             EnsureTls();
 
@@ -1570,8 +1574,10 @@ namespace SpicetifyUpdater
             catch (Exception)
             {
                 // The API is a fallback for the release page here, so a stored asset list
-                // (sizes and digests included) beats failing while GitHub is limited.
-                if (cached != null)
+                // (sizes and digests included) beats failing while GitHub is limited, but
+                // only when it describes the release that is actually being installed.
+                if (cached != null && !string.IsNullOrEmpty(tag) &&
+                    string.Equals(cached.Tag, tag, StringComparison.OrdinalIgnoreCase))
                 {
                     ReleaseCache[repo] = cached;
                     ReleaseCacheTime[repo] = DateTime.Now;
@@ -1696,9 +1702,9 @@ namespace SpicetifyUpdater
             }
         }
 
-        private static Release LatestRelease(string repo, bool force)
+        private static Release LatestRelease(string repo, string tag, bool force)
         {
-            return LatestReleaseAsync(repo, force).GetAwaiter().GetResult();
+            return LatestReleaseAsync(repo, tag, force).GetAwaiter().GetResult();
         }
 
         private static string LatestTag(string repo, bool force)
@@ -1751,8 +1757,9 @@ namespace SpicetifyUpdater
                 }
             }
 
-            // github.com did not redirect; the API can still answer.
-            var release = await LatestReleaseAsync(repo, force);
+            // github.com did not redirect; the API can still answer. No tag is expected here,
+            // so a stored release must not be passed off as the latest one.
+            var release = await LatestReleaseAsync(repo, null, force);
             TagCache[repo] = release.Tag;
             TagCacheTime[repo] = DateTime.Now;
             return release.Tag;
