@@ -69,6 +69,15 @@ function Read-Release($headers, [string]$id) {
     return Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$id" -Headers $headers
 }
 
+function Get-Text($url, $headers) {
+    $response = Invoke-WebRequest -Uri $url -Headers $headers -UseBasicParsing
+
+    # GitHub serves release files as application/octet-stream, and Windows PowerShell hands
+    # those back as bytes, which have none of the string methods used on the result.
+    if ($response.Content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($response.Content) }
+    return [string]$response.Content
+}
+
 function New-Draft($headers, [string]$sha) {
     return Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
         -Headers $headers -ContentType 'application/json' -Body (@{
@@ -257,7 +266,7 @@ try {
     Assert-Assets $live $expected
     $checksumUrl = $live.assets | Where-Object { $_.name -eq $checksumName } |
         Select-Object -ExpandProperty browser_download_url
-    $downloaded = (Invoke-WebRequest -Uri $checksumUrl -Headers $headers -UseBasicParsing).Content
+    $downloaded = Get-Text $checksumUrl $headers
     if ($downloaded.Trim() -ne $checksumText.Trim()) { throw 'the published checksum file does not match the built files' }
     Write-Host '  ok    published checksums match the uploaded files'
 
