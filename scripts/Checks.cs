@@ -80,8 +80,11 @@ internal static class Program
             Check("valid zip extracts", File.Exists(Path.Combine(unpacked, "spicetify.exe")), "spicetify.exe missing");
 
             Section("cache tag matching");
-            var cachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpicetifyUpdater", "releases.json");
+            var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpicetifyUpdater");
+            var cachePath = Path.Combine(cacheDir, "releases.json");
             var backup = File.Exists(cachePath) ? File.ReadAllText(cachePath) : null;
+            var createdDir = !Directory.Exists(cacheDir);
+            Directory.CreateDirectory(cacheDir);
             try
             {
                 // The repo does not exist, so only the stored asset list can answer.
@@ -97,8 +100,10 @@ internal static class Program
             }
             finally
             {
-                if (backup == null) File.Delete(cachePath);
+                if (backup == null) { if (File.Exists(cachePath)) File.Delete(cachePath); }
                 else File.WriteAllText(cachePath, backup);
+
+                if (createdDir) { try { Directory.Delete(cacheDir, true); } catch { } }
             }
 
             Section("live release lookup (github.com, no API quota)");
