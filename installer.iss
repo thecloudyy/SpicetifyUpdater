@@ -2,7 +2,7 @@
 ; Build with: "C:\Users\<you>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "Spicetify Updater"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "Spicetify Updater"
 #define MyAppExeName "Spicetify-Updater.exe"
 #define MyAppUrl "https://github.com/thecloudyy/SpicetifyUpdater"
