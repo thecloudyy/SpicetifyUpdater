@@ -943,7 +943,7 @@ namespace SpicetifyUpdater
                 else
                     Say(status.VersionsFromCache
                         ? "GitHub is not answering right now, so these are the last known versions."
-                        : "GitHub is not answering right now. What is installed is shown above.", "warn");
+                        : "GitHub is not answering right now, so updates cannot be checked.", "warn");
                 return;
             }
 
