@@ -249,10 +249,10 @@ namespace SpicetifyUpdater
         {
             Title = "Spicetify Updater";
             Width = 960;
-            Height = 600;
+            Height = 620;
             // Below this the maintenance text runs under its buttons.
             MinWidth = 880;
-            MinHeight = 560;
+            MinHeight = 590;
             Background = Theme.Background;
             Foreground = Theme.Text;
             FontFamily = new FontFamily("Segoe UI");
@@ -378,7 +378,7 @@ namespace SpicetifyUpdater
             cards.Children.Add(mpCard);
 
             /* maintenance */
-            _closeSpotify = Ui.Check("Close Spotify automatically, then reopen it", true);
+            _closeSpotify = Ui.Toggle("Close Spotify while updating, then reopen it", true);
             _repair = Ui.MakeButton("Repair", false);
             _backupApply = Ui.MakeButton("Backup & Apply", false);
             _apply = Ui.MakeButton("Apply", false);
@@ -392,7 +392,7 @@ namespace SpicetifyUpdater
             _apply.Click += async (s, e) => await RunActionAsync("apply", _closeSpotify.IsChecked == true);
             _restore.Click += async (s, e) => await RunActionAsync("restore", _closeSpotify.IsChecked == true);
 
-            var toolsLeft = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            var toolsLeft = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) };
             toolsLeft.Children.Add(new TextBlock
             {
                 Text = "Maintenance",
@@ -402,11 +402,11 @@ namespace SpicetifyUpdater
             });
             toolsLeft.Children.Add(new TextBlock
             {
-                Text = "Repair reinstalls the full CLI package, restores Spotify and re-applies.",
+                Text = "Reinstalls Spicetify and puts Spotify's original files back.",
                 FontSize = 12.5,
                 Foreground = Theme.Muted,
                 TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 3, 12, 0)
+                Margin = new Thickness(0, 3, 0, 0)
             });
             toolsLeft.Children.Add(_closeSpotify);
 
@@ -774,6 +774,13 @@ namespace SpicetifyUpdater
             return string.IsNullOrEmpty(value) ? "-" : "v" + value;
         }
 
+        private static bool IsRateLimited(string error)
+        {
+            return !string.IsNullOrEmpty(error) &&
+                (error.IndexOf("403", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 error.IndexOf("rate limit", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
         private void Render(Status status)
         {
             if (status == null) return;
@@ -781,7 +788,7 @@ namespace SpicetifyUpdater
             _cliInstalled.Text = status.CliInstalled
                 ? (string.IsNullOrEmpty(status.CliVersion) ? "Installed" : VersionText(status.CliVersion))
                 : "Not installed";
-            _cliLatest.Text = VersionText(status.CliLatest);
+            _cliLatest.Text = string.IsNullOrEmpty(status.CliLatest) ? "Unknown" : VersionText(status.CliLatest);
             _cliPath.Text = status.CliInstalled ? status.CliPath : "";
             _cliPath.ToolTip = _cliPath.Text;
 
@@ -806,8 +813,9 @@ namespace SpicetifyUpdater
             }
             else if (string.IsNullOrEmpty(status.CliLatest))
             {
-                // GitHub could not be reached, so "up to date" would be a guess.
-                Ui.SetPill(_cliPill, _cliPillText, "Installed", "warn");
+                // GitHub could not be reached and nothing was cached, so "up to date"
+                // would be a guess; the status line explains why.
+                Ui.SetPill(_cliPill, _cliPillText, "Installed", "info");
                 _cliPrimary.Content = "Installed";
                 _cliPrimary.Tag = null;
                 _cliPrimary.IsEnabled = false;
@@ -839,7 +847,7 @@ namespace SpicetifyUpdater
             _mpInstalled.Text = status.MarketplaceInstalled
                 ? (string.IsNullOrEmpty(status.MarketplaceVersion) ? "Installed" : VersionText(status.MarketplaceVersion))
                 : "Not installed";
-            _mpLatest.Text = VersionText(status.MarketplaceLatest);
+            _mpLatest.Text = string.IsNullOrEmpty(status.MarketplaceLatest) ? "Unknown" : VersionText(status.MarketplaceLatest);
             _mpPath.Text = status.MarketplaceInstalled ? status.MarketplacePath : "";
             _mpPath.ToolTip = _mpPath.Text;
 
@@ -873,7 +881,7 @@ namespace SpicetifyUpdater
             }
             else if (string.IsNullOrEmpty(status.MarketplaceLatest))
             {
-                Ui.SetPill(_mpPill, _mpPillText, "Installed", "warn");
+                Ui.SetPill(_mpPill, _mpPillText, "Installed", "info");
                 _mpPrimary.Content = "Installed";
                 _mpPrimary.Tag = null;
                 _mpPrimary.IsEnabled = false;
@@ -928,7 +936,14 @@ namespace SpicetifyUpdater
 
             if (!string.IsNullOrEmpty(status.ReleaseError))
             {
-                Say("Could not check for updates right now. The versions below are still accurate.", "warn");
+                if (IsRateLimited(status.ReleaseError))
+                    Say(status.VersionsFromCache
+                        ? "GitHub allows only a few checks an hour. These are the last known versions."
+                        : "GitHub allows only a few checks an hour. Try again a little later.", "warn");
+                else
+                    Say(status.VersionsFromCache
+                        ? "GitHub is not answering right now, so these are the last known versions."
+                        : "GitHub is not answering right now. What is installed is shown above.", "warn");
                 return;
             }
 
@@ -1176,18 +1191,77 @@ namespace SpicetifyUpdater
             }
         }
 
-        public static CheckBox Check(string label, bool isChecked)
+        // A switch instead of a tick box: the whole row is the hit area, and the
+        // sliding knob reads as "on" at a glance.
+        public static CheckBox Toggle(string label, bool isChecked)
         {
             var check = new CheckBox
             {
-                // A wrapping label, so a narrow window shortens nothing.
-                Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap },
                 IsChecked = isChecked,
-                Foreground = Theme.Frozen("#A8AEB2"),
+                Cursor = Cursors.Hand,
                 FontSize = 12,
+                Foreground = Theme.Frozen("#A8AEB2"),
                 Margin = new Thickness(0, 10, 0, 0),
-                VerticalContentAlignment = VerticalAlignment.Center
+                VerticalContentAlignment = VerticalAlignment.Center,
+                // A wrapping label, so a narrow window shortens nothing.
+                Content = new TextBlock
+                {
+                    Text = label,
+                    TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
             };
+
+            var row = new FrameworkElementFactory(typeof(StackPanel));
+            row.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+
+            var track = new FrameworkElementFactory(typeof(Border), "track");
+            track.SetValue(FrameworkElement.WidthProperty, 40.0);
+            track.SetValue(FrameworkElement.HeightProperty, 22.0);
+            track.SetValue(Border.CornerRadiusProperty, new CornerRadius(11));
+            track.SetValue(Border.BackgroundProperty, Theme.Frozen("#232828"));
+            track.SetValue(Border.BorderBrushProperty, Theme.Frozen("#333A39"));
+            track.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+            track.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+
+            var knob = new FrameworkElementFactory(typeof(Border), "knob");
+            knob.SetValue(FrameworkElement.WidthProperty, 16.0);
+            knob.SetValue(FrameworkElement.HeightProperty, 16.0);
+            knob.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
+            knob.SetValue(Border.BackgroundProperty, Theme.Frozen("#7C8482"));
+            knob.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Left);
+            knob.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            knob.SetValue(FrameworkElement.MarginProperty, new Thickness(3, 0, 0, 0));
+            track.AppendChild(knob);
+
+            var text = new FrameworkElementFactory(typeof(ContentPresenter));
+            text.SetValue(FrameworkElement.MarginProperty, new Thickness(11, 0, 0, 0));
+            text.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+
+            row.AppendChild(track);
+            row.AppendChild(text);
+
+            var template = new ControlTemplate(typeof(CheckBox)) { VisualTree = row };
+
+            var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+            hover.Setters.Add(new Setter(Border.BorderBrushProperty, Theme.Frozen("#4A5453")) { TargetName = "track" });
+            hover.Setters.Add(new Setter(Border.BackgroundProperty, Theme.Frozen("#2A302F")) { TargetName = "track" });
+            template.Triggers.Add(hover);
+
+            var on = new Trigger { Property = System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, Value = true };
+            on.Setters.Add(new Setter(Border.BackgroundProperty, Theme.Accent) { TargetName = "track" });
+            on.Setters.Add(new Setter(Border.BorderBrushProperty, Theme.Accent) { TargetName = "track" });
+            on.Setters.Add(new Setter(Border.BackgroundProperty, Theme.Frozen("#06120A")) { TargetName = "knob" });
+            on.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Right) { TargetName = "knob" });
+            on.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(0, 0, 3, 0)) { TargetName = "knob" });
+            template.Triggers.Add(on);
+
+            var off = new Trigger { Property = System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, Value = false };
+            off.Setters.Add(new Setter(Border.BackgroundProperty, Theme.Frozen("#7C8482")) { TargetName = "knob" });
+            off.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Left) { TargetName = "knob" });
+            template.Triggers.Add(off);
+
+            check.Template = template;
             return check;
         }
 
@@ -1276,6 +1350,7 @@ namespace SpicetifyUpdater
         public string Platform;
         public string Arch;
         public string ReleaseError;
+        public bool VersionsFromCache;
 
         public string SelfVersion;
         public string SelfLatest;
@@ -1350,7 +1425,8 @@ namespace SpicetifyUpdater
         private static async Task<Release> LatestReleaseAsync(string repo, bool force)
         {
             EnsureTls();
-            if (!force && ReleaseCache.ContainsKey(repo) && (DateTime.Now - _cacheTime).TotalMinutes < 5)
+            // GitHub allows 60 anonymous requests an hour, three are used per check.
+            if (!force && ReleaseCache.ContainsKey(repo) && (DateTime.Now - _cacheTime).TotalMinutes < 15)
                 return ReleaseCache[repo];
 
             using (var client = new HttpClient())
@@ -1378,6 +1454,69 @@ namespace SpicetifyUpdater
         private static Release LatestRelease(string repo, bool force)
         {
             return LatestReleaseAsync(repo, force).GetAwaiter().GetResult();
+        }
+
+        /* ------------------------------------------------ last known versions */
+
+        private static readonly Dictionary<string, string> Known = new Dictionary<string, string>();
+
+        private static string VersionStatePath
+        {
+            get
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "SpicetifyUpdater", "versions.json");
+            }
+        }
+
+        private static string KnownVersion(string key)
+        {
+            lock (Known)
+            {
+                if (Known.Count == 0)
+                {
+                    try
+                    {
+                        if (File.Exists(VersionStatePath))
+                        {
+                            var data = (Dictionary<string, object>)new JavaScriptSerializer()
+                                .DeserializeObject(File.ReadAllText(VersionStatePath));
+                            foreach (var pair in data) Known[pair.Key] = Convert.ToString(pair.Value);
+                        }
+                    }
+                    catch
+                    {
+                        // A corrupt cache simply means no fallback numbers.
+                    }
+                }
+
+                string value;
+                return Known.TryGetValue(key, out value) ? value : null;
+            }
+        }
+
+        private static void SaveKnownVersion(string key, string version)
+        {
+            if (string.IsNullOrEmpty(version)) return;
+
+            lock (Known)
+            {
+                string existing;
+                if (Known.TryGetValue(key, out existing) && existing == version) return;
+                Known[key] = version;
+
+                try
+                {
+                    var dir = Path.GetDirectoryName(VersionStatePath);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    File.WriteAllText(VersionStatePath, new JavaScriptSerializer().Serialize(Known));
+                }
+                catch
+                {
+                    // Remembering versions is a nicety, never a reason to fail.
+                }
+            }
         }
 
         /* -------------------------------------------------------------- status */
@@ -1412,27 +1551,38 @@ namespace SpicetifyUpdater
             {
                 var cli = LatestRelease(CliRepo, force);
                 status.CliLatest = cli.Tag;
-                status.CliUpdate = status.CliVersion != null && Compare(status.CliLatest, status.CliVersion) > 0;
+                SaveKnownVersion("cli", cli.Tag);
             }
             catch (Exception ex)
             {
                 status.ReleaseError = ex.Message;
+                // GitHub is sometimes rate limited or offline; stale numbers beat "-".
+                status.CliLatest = KnownVersion("cli");
+                status.VersionsFromCache = !string.IsNullOrEmpty(status.CliLatest);
             }
+
+            status.CliUpdate = status.CliInstalled && !string.IsNullOrEmpty(status.CliVersion) &&
+                !string.IsNullOrEmpty(status.CliLatest) && Compare(status.CliLatest, status.CliVersion) > 0;
 
             try
             {
                 var market = LatestRelease(MarketRepo, force);
                 status.MarketplaceLatest = market.Tag;
-                // Without a version there is nothing to compare: report the install and
-                // offer Reinstall instead of a made-up "update available".
-                status.MarketplaceUpdate = status.MarketplaceInstalled &&
-                    !string.IsNullOrEmpty(status.MarketplaceVersion) &&
-                    Compare(status.MarketplaceLatest, status.MarketplaceVersion) > 0;
+                SaveKnownVersion("marketplace", market.Tag);
             }
             catch (Exception ex)
             {
                 if (status.ReleaseError == null) status.ReleaseError = ex.Message;
+                status.MarketplaceLatest = KnownVersion("marketplace");
+                status.VersionsFromCache = status.VersionsFromCache || !string.IsNullOrEmpty(status.MarketplaceLatest);
             }
+
+            // Without a version there is nothing to compare: report the install and
+            // offer Reinstall instead of a made-up "update available".
+            status.MarketplaceUpdate = status.MarketplaceInstalled &&
+                !string.IsNullOrEmpty(status.MarketplaceVersion) &&
+                !string.IsNullOrEmpty(status.MarketplaceLatest) &&
+                Compare(status.MarketplaceLatest, status.MarketplaceVersion) > 0;
 
             status.SelfVersion = SelfVersion();
             try
@@ -1474,6 +1624,7 @@ namespace SpicetifyUpdater
                 { "spotifyFound", s.SpotifyFound },
                 { "onPath", s.OnPath },
                 { "releaseError", s.ReleaseError },
+                { "versionsFromCache", s.VersionsFromCache },
                 { "selfVersion", s.SelfVersion },
                 { "selfLatest", s.SelfLatest },
                 { "selfUpdate", s.SelfUpdate }
