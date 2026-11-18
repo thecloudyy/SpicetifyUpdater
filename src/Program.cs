@@ -65,13 +65,13 @@ namespace SpicetifyUpdater
                         window.UpdateLayout();
                         root.UpdateLayout();
                         var pageElement = (FrameworkElement)((Grid)root).Children[0];
-                        var consoleElement = (FrameworkElement)((Grid)pageElement).Children[3];
+                        var statusElement = (FrameworkElement)((Grid)pageElement).Children[3];
                         File.AppendAllText(trace, string.Format(
-                            "window {0}x{1} root {2}x{3} page {4}x{5} consoleH {6} pageBottom {7}\n",
+                            "window {0}x{1} root {2}x{3} page {4}x{5} statusH {6} pageBottom {7}\n",
                             window.ActualWidth, window.ActualHeight,
                             root.ActualWidth, root.ActualHeight,
                             pageElement.ActualWidth, pageElement.ActualHeight,
-                            consoleElement.ActualHeight,
+                            statusElement.ActualHeight,
                             pageElement.TranslatePoint(new Point(0, pageElement.ActualHeight), root).Y));
                         var bitmap = new RenderTargetBitmap(
                             Math.Max(1, (int)root.ActualWidth), Math.Max(1, (int)root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
@@ -201,7 +201,6 @@ namespace SpicetifyUpdater
         public static readonly Brush AccentHover = Frozen("#2BE96E");
         public static readonly Brush AccentPressed = Frozen("#16A349");
         public static readonly Brush Danger = Frozen("#F2596B");
-        public static readonly Brush LogBackground = Frozen("#0A0B0B");
         public static readonly Brush Disabled = Frozen("#2A2E2E");
 
         public static Brush Frozen(string hex)
@@ -237,22 +236,23 @@ namespace SpicetifyUpdater
         private readonly Button _restore;
         private readonly Button _refresh;
 
-        private readonly RichTextBox _log;
+        private readonly TextBlock _statusText;
+        private readonly Border _statusDot;
         private readonly ProgressBar _progress;
-        private readonly TextBlock _state;
 
+        private readonly List<string> _notices = new List<string>();
         private Status _status;
         private bool _busy;
+        private string _busyLabel = "Working";
 
         public MainWindow()
         {
             Title = "Spicetify Updater";
-            Width = 1040;
-            Height = 820;
-            // Below this the maintenance text runs under its buttons and the
-            // activity log has no height left at all.
-            MinWidth = 900;
-            MinHeight = 720;
+            Width = 960;
+            Height = 600;
+            // Below this the maintenance text runs under its buttons.
+            MinWidth = 880;
+            MinHeight = 560;
             Background = Theme.Background;
             Foreground = Theme.Text;
             FontFamily = new FontFamily("Segoe UI");
@@ -303,6 +303,7 @@ namespace SpicetifyUpdater
             brand.Children.Add(brandText);
 
             _refresh = Ui.MakeButton("Check for updates", false);
+            _refresh.ToolTip = "Looks for new Spicetify CLI, Marketplace and Updater versions.";
             _refresh.Click += async (s, e) => await RefreshStatusAsync(true);
 
             // Only shown when there really is a newer release to install.
@@ -310,6 +311,7 @@ namespace SpicetifyUpdater
             _selfButton.Padding = new Thickness(12, 4, 12, 4);
             _selfButton.FontSize = 11.5;
             _selfButton.Margin = new Thickness(0, 0, 8, 0);
+            _selfButton.ToolTip = "Downloads and installs the new version of this app.";
             _selfButton.Visibility = Visibility.Collapsed;
             _selfButton.Click += async (s, e) => await RunActionAsync("update-self", false);
 
@@ -337,11 +339,12 @@ namespace SpicetifyUpdater
             _cliPill = Ui.Pill(_cliPillText);
             _cliPrimary = Ui.MakeButton("Install", true);
             _cliSecondary = Ui.MakeButton("Reinstall", false);
+            _cliSecondary.ToolTip = "Downloads and installs the Spicetify CLI again, keeping your config.";
             _cliPrimary.Click += async (s, e) => await RunActionAsync(_cliPrimary.Tag as string, true);
             _cliSecondary.Click += async (s, e) => await RunActionAsync("install-cli", true);
 
             var cliCard = Ui.Card(Ui.CardContent(
-                "\u25B8_", "Spicetify CLI", _cliPill,
+                "\u25B8_", "Spicetify CLI", "The command line tools that patch Spotify.", _cliPill,
                 new[] { ("Installed", _cliInstalled), ("Latest release", _cliLatest) },
                 _cliPath,
                 _cliPrimary, _cliSecondary));
@@ -354,11 +357,12 @@ namespace SpicetifyUpdater
             _mpPill = Ui.Pill(_mpPillText);
             _mpPrimary = Ui.MakeButton("Install", true);
             _mpSecondary = Ui.MakeButton("Reinstall", false);
+            _mpSecondary.ToolTip = "Downloads and installs Marketplace again, keeping your settings.";
             _mpPrimary.Click += async (s, e) => await RunActionAsync(_mpPrimary.Tag as string, true);
             _mpSecondary.Click += async (s, e) => await RunActionAsync("install-marketplace", true);
 
             var mpCard = Ui.Card(Ui.CardContent(
-                "\u25A2", "Marketplace", _mpPill,
+                "\u25A2", "Marketplace", "Themes and extensions, inside Spotify.", _mpPill,
                 new[] { ("Installed", _mpInstalled), ("Latest release", _mpLatest) },
                 _mpPath,
                 _mpPrimary, _mpSecondary));
@@ -379,6 +383,10 @@ namespace SpicetifyUpdater
             _backupApply = Ui.MakeButton("Backup & Apply", false);
             _apply = Ui.MakeButton("Apply", false);
             _restore = Ui.MakeButton("Restore Spotify", false);
+            _repair.ToolTip = "Reinstalls Spicetify, restores Spotify's original files and applies again.";
+            _backupApply.ToolTip = "Saves a copy of Spotify's original files, then applies your setup.";
+            _apply.ToolTip = "Re-applies your Spicetify theme and extensions.";
+            _restore.ToolTip = "Puts Spotify's original files back and removes Spicetify's patches.";
             _repair.Click += async (s, e) => await RunActionAsync("repair", _closeSpotify.IsChecked == true);
             _backupApply.Click += async (s, e) => await RunActionAsync("backup-apply", _closeSpotify.IsChecked == true);
             _apply.Click += async (s, e) => await RunActionAsync("apply", _closeSpotify.IsChecked == true);
@@ -419,153 +427,142 @@ namespace SpicetifyUpdater
             var toolsCard = Ui.Card(tools);
             toolsCard.Margin = new Thickness(0, 16, 0, 0);
 
-            /* console */
-            _state = new TextBlock
+            /* status line */
+            _statusDot = new Border
             {
-                Text = "IDLE",
-                FontSize = 11,
-                Foreground = Theme.Muted,
+                Width = 8,
+                Height = 8,
+                CornerRadius = new CornerRadius(4),
+                Background = Theme.Muted,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 12, 0)
+                Margin = new Thickness(0, 1, 10, 0)
             };
-            var clear = Ui.MakeButton("Clear", false);
-            clear.Padding = new Thickness(13, 5, 13, 5);
-            clear.FontSize = 12;
-            clear.Click += (s, e) =>
+            _statusText = new TextBlock
             {
-                _log.Document.Blocks.Clear();
-                AppendLog("Ready. Nothing has been changed yet.", "muted");
+                Text = "Checking what you have installed",
+                FontSize = 13,
+                Foreground = Theme.Text,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
             };
-
-            var consoleHead = new Grid { Margin = new Thickness(0, 0, 0, 11) };
-            consoleHead.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            consoleHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var headText = new TextBlock { Text = "Activity", FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Theme.Text };
-            var headRight = new StackPanel { Orientation = Orientation.Horizontal };
-            headRight.Children.Add(_state);
-            headRight.Children.Add(clear);
-            Grid.SetColumn(headText, 0);
-            Grid.SetColumn(headRight, 1);
-            consoleHead.Children.Add(headText);
-            consoleHead.Children.Add(headRight);
-
             _progress = new ProgressBar
             {
-                Height = 3,
+                Height = 4,
                 Minimum = 0,
                 Maximum = 100,
                 Value = 0,
+                Width = 140,
                 Foreground = Theme.Accent,
                 Background = Theme.Frozen("#1A1D1D"),
                 BorderThickness = new Thickness(0),
-                Margin = new Thickness(0, 0, 0, 11),
-                Visibility = Visibility.Hidden
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(18, 0, 0, 0),
+                Visibility = Visibility.Collapsed
             };
 
-            _log = new RichTextBox
+            var statusRow = new Grid();
+            statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(_statusDot, 0);
+            Grid.SetColumn(_statusText, 1);
+            Grid.SetColumn(_progress, 2);
+            statusRow.Children.Add(_statusDot);
+            statusRow.Children.Add(_statusText);
+            statusRow.Children.Add(_progress);
+
+            var statusCard = new Border
             {
-                IsReadOnly = true,
-                Background = Theme.LogBackground,
-                Foreground = Theme.Frozen("#8A9290"),
+                Background = Theme.Frozen("#0E1010"),
+                BorderBrush = Theme.Line,
                 BorderThickness = new Thickness(1),
-                BorderBrush = Theme.Frozen("#1D2020"),
-                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
-                FontSize = 12,
-                Padding = new Thickness(10, 8, 10, 8),
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                MinHeight = 96,
-                IsDocumentEnabled = false
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(16, 12, 16, 12),
+                Margin = new Thickness(0, 16, 0, 0),
+                Child = statusRow
             };
-            _log.Document.PagePadding = new Thickness(0);
-
-            // A star row lets the log fill whatever height the window gives the card,
-            // instead of leaving dead space under a fixed-height text box.
-            var consoleBody = new Grid();
-            consoleBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            consoleBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            consoleBody.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            Grid.SetRow(consoleHead, 0);
-            Grid.SetRow(_progress, 1);
-            Grid.SetRow(_log, 2);
-            consoleBody.Children.Add(consoleHead);
-            consoleBody.Children.Add(_progress);
-            consoleBody.Children.Add(_log);
-            var consoleCard = Ui.Card(consoleBody);
-            consoleCard.Margin = new Thickness(0, 16, 0, 0);
 
             /* root */
             var root = new Grid { Margin = new Thickness(0), Background = Theme.Background };
-            var page = new Grid { Margin = new Thickness(26, 26, 26, 22) };
+            var page = new Grid { Margin = new Thickness(28, 26, 28, 24), MaxWidth = 960, HorizontalAlignment = HorizontalAlignment.Center };
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             Grid.SetRow(header, 0);
             Grid.SetRow(cards, 1);
             Grid.SetRow(toolsCard, 2);
-            Grid.SetRow(consoleCard, 3);
+            Grid.SetRow(statusCard, 4);
             page.Children.Add(header);
             page.Children.Add(cards);
             page.Children.Add(toolsCard);
-            page.Children.Add(consoleCard);
+            page.Children.Add(statusCard);
 
             root.Children.Add(page);
             Content = root;
 
-            AppendLog("Ready. Nothing has been changed yet.", "muted");
             Loaded += async (s, e) => await RefreshStatusAsync(false);
         }
 
         private readonly Button _selfButton;
-        private bool _selfCheckLogged;
 
         /* ------------------------------------------------------------- logging */
 
-        private void AppendLog(string text, string kind = "dim")
+        /* ---------------------------------------------------------- status line */
+
+        private void Say(string text, string kind = "info")
         {
             if (!Dispatcher.CheckAccess())
             {
-                Dispatcher.BeginInvoke(new Action(() => AppendLog(text, kind)));
+                Dispatcher.BeginInvoke(new Action(() => Say(text, kind)));
                 return;
             }
 
-            Brush brush;
+            _statusText.Text = text;
             switch (kind)
             {
-                case "success": brush = Theme.Accent; break;
-                case "error": brush = Theme.Danger; break;
-                case "heading": brush = Theme.Frozen("#D7DBDB"); break;
-                case "muted": brush = Theme.Frozen("#5D6463"); break;
-                default: brush = Theme.Frozen("#7C8482"); break;
+                case "success":
+                    _statusDot.Background = Theme.Accent;
+                    _statusText.Foreground = Theme.Text;
+                    break;
+                case "warn":
+                    _statusDot.Background = Theme.Frozen("#F2B45A");
+                    _statusText.Foreground = Theme.Frozen("#F3D8AE");
+                    break;
+                case "error":
+                    _statusDot.Background = Theme.Danger;
+                    _statusText.Foreground = Theme.Frozen("#FFC4CB");
+                    break;
+                default:
+                    _statusDot.Background = Theme.Muted;
+                    _statusText.Foreground = Theme.Text;
+                    break;
             }
-
-            var paragraph = new Paragraph(new Run(string.Format("[{0}] {1}", DateTime.Now.ToString("HH:mm:ss"), text)))
-            {
-                Foreground = brush,
-                Margin = new Thickness(0, 0, 0, 2),
-                FontWeight = kind == "heading" ? FontWeights.SemiBold : FontWeights.Normal
-            };
-            _log.Document.Blocks.Add(paragraph);
-            _log.ScrollToEnd();
         }
 
         private void SetBusy(bool busy, string label = "Working")
         {
             _busy = busy;
+            _busyLabel = label;
             foreach (var button in new[] { _cliPrimary, _cliSecondary, _mpPrimary, _mpSecondary, _repair, _backupApply, _apply, _restore, _selfButton })
                 button.IsEnabled = !busy;
 
-            _state.Text = busy ? label.ToUpperInvariant() : "IDLE";
-            _state.Foreground = busy ? Theme.Accent : Theme.Muted;
             _refresh.IsEnabled = !busy;
 
-            if (!busy)
+            if (busy)
             {
-                _progress.Visibility = Visibility.Hidden;
-                _progress.Value = 0;
-                Render(_status);
+                _progress.Visibility = Visibility.Visible;
+                _progress.IsIndeterminate = true;
+                Say(label);
+                return;
             }
+
+            _progress.Visibility = Visibility.Collapsed;
+            _progress.IsIndeterminate = false;
+            _progress.Value = 0;
+            Render(_status);
         }
 
         /* -------------------------------------------------------------- actions */
@@ -574,52 +571,35 @@ namespace SpicetifyUpdater
         {
             if (_busy || string.IsNullOrEmpty(action)) return;
 
-            SetBusy(true, "starting");
+            SetBusy(true, ActionLabel(action));
+            lock (_notices) _notices.Clear();
+
+            var spotifyReopened = false;
             var result = await Task.Run(() =>
             {
                 var wasRunning = false;
                 try
                 {
-                    if (closeSpotify)
-                    {
-                        wasRunning = Spicetify.IsSpotifyRunning();
-                        if (wasRunning)
-                        {
-                            AppendLog("Closing Spotify", "dim");
-                            if (!Spicetify.StopSpotify()) AppendLog("Spotify is still running, file changes may fail", "error");
-                        }
-                        else
-                        {
-                            AppendLog("Spotify is not running", "dim");
-                        }
-                    }
+                    if (closeSpotify) wasRunning = Spicetify.IsSpotifyRunning() && Spicetify.StopSpotify();
 
                     switch (action)
                     {
                         case "install-cli":
                         case "update-cli":
-                            AppendLog("Starting Spicetify CLI " + (action == "update-cli" ? "update" : "install"), "heading");
                             return Spicetify.InstallCli(Log, Progress);
                         case "install-marketplace":
                         case "update-marketplace":
-                            AppendLog("Starting Marketplace " + (action == "update-marketplace" ? "update" : "install"), "heading");
                             return Spicetify.InstallMarketplace(Log, Progress);
                         case "repair":
-                            AppendLog("Repairing the Spicetify install", "heading");
                             return Spicetify.Repair(Log, Progress);
                         case "apply":
-                            AppendLog("Running spicetify apply", "heading");
                             return Spicetify.RunCommand(new[] { "apply" }, Log, false);
                         case "backup-apply":
-                            AppendLog("Running spicetify backup", "heading");
                             Spicetify.RunCommand(new[] { "backup" }, Log, true);
-                            AppendLog("Running spicetify apply", "heading");
                             return Spicetify.RunCommand(new[] { "apply" }, Log, false);
                         case "restore":
-                            AppendLog("Running spicetify restore", "heading");
                             return Spicetify.RunCommand(new[] { "restore" }, Log, false);
                         case "update-self":
-                            AppendLog("Updating Spicetify Updater itself", "heading");
                             return Spicetify.UpdateSelf(Log, Progress);
                         default:
                             throw new InvalidOperationException("Unknown action: " + action);
@@ -627,47 +607,125 @@ namespace SpicetifyUpdater
                 }
                 finally
                 {
-                    if (wasRunning)
+                    if (wasRunning && Spicetify.StartSpotify())
                     {
-                        if (Spicetify.StartSpotify())
-                        {
-                            AppendLog("Reopened Spotify", "dim");
-                            System.Threading.Thread.Sleep(1200);
-                        }
-                        else
-                        {
-                            AppendLog("Could not reopen Spotify, start it yourself", "error");
-                        }
+                        spotifyReopened = true;
+                        Thread.Sleep(1200);
                     }
                 }
             }).ContinueWith(t => t, TaskScheduler.FromCurrentSynchronizationContext());
 
-            if (result.IsFaulted)
-            {
-                var error = result.Exception?.GetBaseException();
-                AppendLog(error?.Message ?? "Unknown error", "error");
-            }
-            else
-            {
-                // A self-update that found nothing to install returns no tag and keeps
-                // the app open; a real one hands over to the setup and exits.
-                var updated = action == "update-self" && !string.IsNullOrEmpty(result.Result);
-                if (!updated) AppendLog("Done", "success");
-                if (updated)
-                {
-                    Application.Current.Shutdown();
-                    return;
-                }
-            }
-
             SetBusy(false);
             await RefreshStatusAsync(true);
+
+            if (result.IsFaulted)
+            {
+                Say(Friendly(result.Exception?.GetBaseException()), "error");
+                return;
+            }
+
+            // A self-update with nothing to install returns no version and keeps the
+            // app open; a real one hands over to the setup and exits.
+            if (action == "update-self" && !string.IsNullOrEmpty(result.Result))
+            {
+                Application.Current.Shutdown();
+                return;
+            }
+
+            string notice;
+            lock (_notices) notice = _notices.Count == 0 ? null : string.Join(" ", _notices);
+            var message = DoneMessage(action, result.Result, spotifyReopened);
+            if (notice != null) message += " " + notice;
+            Say(message, notice == null ? "success" : "warn");
         }
 
+        private static string ActionLabel(string action)
+        {
+            switch (action)
+            {
+                case "install-cli": return "Installing Spicetify CLI";
+                case "update-cli": return "Updating Spicetify CLI";
+                case "install-marketplace": return "Installing Marketplace";
+                case "update-marketplace": return "Updating Marketplace";
+                case "repair": return "Repairing your Spicetify setup";
+                case "apply": return "Applying your changes";
+                case "backup-apply": return "Backing up Spotify and applying your changes";
+                case "restore": return "Restoring the original Spotify files";
+                case "update-self": return "Updating Spicetify Updater";
+                default: return "Working";
+            }
+        }
+
+        private static string DoneMessage(string action, string version, bool reopened)
+        {
+            string message;
+            switch (action)
+            {
+                case "install-cli":
+                case "update-cli":
+                case "repair":
+                    message = string.IsNullOrEmpty(version)
+                        ? "Your Spicetify setup is ready."
+                        : "Spicetify CLI v" + version + " is ready.";
+                    break;
+                case "install-marketplace":
+                case "update-marketplace":
+                    message = "Marketplace v" + version + " is installed.";
+                    break;
+                case "apply":
+                    message = "Your changes are applied.";
+                    break;
+                case "backup-apply":
+                    message = "Spotify is backed up and your changes are applied.";
+                    break;
+                case "restore":
+                    message = "Spotify is back to its original files.";
+                    break;
+                case "update-self":
+                    message = "No updates found. You are on the latest version.";
+                    break;
+                default:
+                    message = "Done.";
+                    break;
+            }
+
+            if (reopened) message += " Spotify was reopened.";
+            return message;
+        }
+
+        private static string Friendly(Exception ex)
+        {
+            if (ex == null) return "Something went wrong. Please try again.";
+
+            if (ex is System.Net.Http.HttpRequestException || ex is WebException)
+                return "Could not reach GitHub. Check your internet connection and try again.";
+            if (ex is UnauthorizedAccessException)
+                return "Windows would not let the app write to that folder. Try again as that user.";
+            if (ex is TaskCanceledException)
+                return "GitHub took too long to answer. Try again in a moment.";
+
+            var message = (ex.Message ?? "").Trim();
+            if (message.IndexOf("rate limit", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "GitHub is limiting update checks right now. Try again in a few minutes.";
+            return message.Length == 0 ? "Something went wrong. Please try again." : message;
+        }
+
+        // There is no console any more, so only problems worth telling the person
+        // about are kept; the raw spicetify chatter would mean nothing to them.
         private void Log(string line)
         {
-            var level = line.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ? "error" : "dim";
-            AppendLog(line.TrimEnd(), level);
+            var text = (line ?? "").Trim();
+            if (text.Length == 0) return;
+
+            if (text.IndexOf("Could not", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("non-zero", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                lock (_notices)
+                {
+                    if (_notices.Count < 2 && !_notices.Contains(text)) _notices.Add(text);
+                }
+            }
         }
 
         private void Progress(double ratio)
@@ -680,12 +738,15 @@ namespace SpicetifyUpdater
 
             if (double.IsNaN(ratio))
             {
-                _progress.Visibility = Visibility.Hidden;
+                _progress.Visibility = Visibility.Visible;
+                _progress.IsIndeterminate = true;
                 return;
             }
 
             _progress.Visibility = Visibility.Visible;
+            _progress.IsIndeterminate = false;
             _progress.Value = Math.Max(1, Math.Min(100, ratio * 100));
+            Say(string.Format("{0} {1}%", _busyLabel, Math.Round(ratio * 100)));
         }
 
         /* --------------------------------------------------------------- status */
@@ -700,7 +761,7 @@ namespace SpicetifyUpdater
             }
             catch (Exception ex)
             {
-                AppendLog("Could not read status: " + ex.Message, "error");
+                Say(Friendly(ex), "error");
             }
             finally
             {
@@ -717,7 +778,9 @@ namespace SpicetifyUpdater
         {
             if (status == null) return;
 
-            _cliInstalled.Text = status.CliInstalled ? VersionText(status.CliVersion ?? "?") : "Not installed";
+            _cliInstalled.Text = status.CliInstalled
+                ? (string.IsNullOrEmpty(status.CliVersion) ? "Installed" : VersionText(status.CliVersion))
+                : "Not installed";
             _cliLatest.Text = VersionText(status.CliLatest);
             _cliPath.Text = status.CliInstalled ? status.CliPath : "";
             _cliPath.ToolTip = _cliPath.Text;
@@ -730,6 +793,27 @@ namespace SpicetifyUpdater
                 _cliPrimary.IsEnabled = !_busy;
                 _cliPrimary.Visibility = Visibility.Visible;
                 _cliSecondary.Visibility = Visibility.Collapsed;
+            }
+            else if (string.IsNullOrEmpty(status.CliVersion))
+            {
+                Ui.SetPill(_cliPill, _cliPillText, "Installed", "warn");
+                _cliPrimary.Content = "Repair";
+                _cliPrimary.Tag = "repair";
+                _cliPrimary.IsEnabled = !_busy;
+                _cliPrimary.Visibility = Visibility.Visible;
+                _cliSecondary.Visibility = Visibility.Visible;
+                _cliSecondary.IsEnabled = !_busy;
+            }
+            else if (string.IsNullOrEmpty(status.CliLatest))
+            {
+                // GitHub could not be reached, so "up to date" would be a guess.
+                Ui.SetPill(_cliPill, _cliPillText, "Installed", "warn");
+                _cliPrimary.Content = "Installed";
+                _cliPrimary.Tag = null;
+                _cliPrimary.IsEnabled = false;
+                _cliPrimary.Visibility = Visibility.Collapsed;
+                _cliSecondary.Visibility = Visibility.Visible;
+                _cliSecondary.IsEnabled = !_busy;
             }
             else if (status.CliUpdate)
             {
@@ -777,6 +861,26 @@ namespace SpicetifyUpdater
                 _mpPrimary.Visibility = Visibility.Visible;
                 _mpSecondary.Visibility = Visibility.Collapsed;
             }
+            else if (string.IsNullOrEmpty(status.MarketplaceVersion))
+            {
+                Ui.SetPill(_mpPill, _mpPillText, "Installed", "warn");
+                _mpPrimary.Content = "Reinstall";
+                _mpPrimary.Tag = null;
+                _mpPrimary.IsEnabled = false;
+                _mpPrimary.Visibility = Visibility.Collapsed;
+                _mpSecondary.Visibility = Visibility.Visible;
+                _mpSecondary.IsEnabled = !_busy;
+            }
+            else if (string.IsNullOrEmpty(status.MarketplaceLatest))
+            {
+                Ui.SetPill(_mpPill, _mpPillText, "Installed", "warn");
+                _mpPrimary.Content = "Installed";
+                _mpPrimary.Tag = null;
+                _mpPrimary.IsEnabled = false;
+                _mpPrimary.Visibility = Visibility.Collapsed;
+                _mpSecondary.Visibility = Visibility.Visible;
+                _mpSecondary.IsEnabled = !_busy;
+            }
             else if (status.MarketplaceUpdate)
             {
                 Ui.SetPill(_mpPill, _mpPillText, "Update available", "update");
@@ -801,14 +905,41 @@ namespace SpicetifyUpdater
             _selfButton.Visibility = status.SelfUpdate ? Visibility.Visible : Visibility.Collapsed;
             if (status.SelfUpdate) _selfButton.Content = "Update to v" + status.SelfLatest;
 
-            if (!status.SelfUpdate && !string.IsNullOrEmpty(status.SelfLatest) && !_selfCheckLogged)
+            if (!_busy) ShowSummary(status);
+        }
+
+        // One plain sentence instead of a console: what is missing, what can be
+        // updated, or that there is nothing to do.
+        private void ShowSummary(Status status)
+        {
+            if (status == null) return;
+
+            if (!status.CliInstalled)
             {
-                _selfCheckLogged = true;
-                AppendLog("No updates found, Spicetify Updater v" + status.SelfVersion + " is the latest", "muted");
+                Say("Spicetify CLI is not installed yet. Start with the Install button.", "info");
+                return;
+            }
+
+            if (!status.MarketplaceInstalled)
+            {
+                Say("Marketplace is not installed. It adds themes and extensions inside Spotify.", "info");
+                return;
             }
 
             if (!string.IsNullOrEmpty(status.ReleaseError))
-                AppendLog("GitHub check failed: " + status.ReleaseError, "error");
+            {
+                Say("Could not check for updates right now. The versions below are still accurate.", "warn");
+                return;
+            }
+
+            if (status.CliUpdate && status.MarketplaceUpdate)
+                Say("Updates are available for the CLI and Marketplace.", "info");
+            else if (status.CliUpdate)
+                Say("An update is available for Spicetify CLI.", "info");
+            else if (status.MarketplaceUpdate)
+                Say("An update is available for Marketplace.", "info");
+            else
+                Say("Everything is installed and up to date.", "success");
         }
     }
 
@@ -879,6 +1010,7 @@ namespace SpicetifyUpdater
         public static Grid CardContent(
             string glyph,
             string title,
+            string blurb,
             Border pill,
             (string Label, TextBlock Value)[] meta,
             TextBlock path,
@@ -917,7 +1049,16 @@ namespace SpicetifyUpdater
             titles.Children.Add(pill);
             head.Children.Add(titles);
 
-            var metaGrid = new Grid { Margin = new Thickness(0, 18, 0, 10) };
+            var description = new TextBlock
+            {
+                Text = blurb,
+                FontSize = 12,
+                Foreground = Theme.Muted,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 14, 0, 0)
+            };
+
+            var metaGrid = new Grid { Margin = new Thickness(0, 16, 0, 10) };
             metaGrid.ColumnDefinitions.Add(new ColumnDefinition());
             metaGrid.ColumnDefinitions.Add(new ColumnDefinition());
             for (var i = 0; i < meta.Length && i < 2; i++)
@@ -948,14 +1089,17 @@ namespace SpicetifyUpdater
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             stack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             Grid.SetRow(head, 0);
-            Grid.SetRow(metaGrid, 1);
-            Grid.SetRow(path, 2);
-            Grid.SetRow(buttons, 4);
+            Grid.SetRow(description, 1);
+            Grid.SetRow(metaGrid, 2);
+            Grid.SetRow(path, 3);
+            Grid.SetRow(buttons, 5);
             stack.Children.Add(head);
+            stack.Children.Add(description);
             stack.Children.Add(metaGrid);
             stack.Children.Add(path);
             stack.Children.Add(buttons);
@@ -1167,8 +1311,27 @@ namespace SpicetifyUpdater
         public static string InstalledExe()
         {
             if (File.Exists(CliExe)) return CliExe;
+
             var legacy = Path.Combine(LegacyRoot, "spicetify.exe");
-            return File.Exists(legacy) ? legacy : null;
+            if (File.Exists(legacy)) return legacy;
+
+            // Package managers and hand-made installs put it elsewhere on PATH.
+            var path = (Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User) ?? "") + ";" +
+                       (Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine) ?? "");
+            foreach (var entry in path.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    var candidate = Path.Combine(entry.Trim().Trim('"'), "spicetify.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch
+                {
+                    // A malformed PATH entry must not break the whole check.
+                }
+            }
+
+            return null;
         }
 
         private static void EnsureTls()
@@ -1243,7 +1406,7 @@ namespace SpicetifyUpdater
             var userdata = UserDataDirectory();
             status.MarketplacePath = Path.Combine(userdata, "CustomApps", "marketplace");
             status.MarketplaceInstalled = File.Exists(Path.Combine(status.MarketplacePath, "manifest.json"));
-            if (status.MarketplaceInstalled) status.MarketplaceVersion = ReadMarker(userdata);
+            if (status.MarketplaceInstalled) status.MarketplaceVersion = ReadMarketplaceVersion(userdata);
 
             try
             {
@@ -1260,8 +1423,11 @@ namespace SpicetifyUpdater
             {
                 var market = LatestRelease(MarketRepo, force);
                 status.MarketplaceLatest = market.Tag;
+                // Without a version there is nothing to compare: report the install and
+                // offer Reinstall instead of a made-up "update available".
                 status.MarketplaceUpdate = status.MarketplaceInstalled &&
-                    Compare(status.MarketplaceLatest, status.MarketplaceVersion ?? "0") > 0;
+                    !string.IsNullOrEmpty(status.MarketplaceVersion) &&
+                    Compare(status.MarketplaceLatest, status.MarketplaceVersion) > 0;
             }
             catch (Exception ex)
             {
@@ -1336,37 +1502,69 @@ namespace SpicetifyUpdater
 
         private static bool IsOnUserPath()
         {
-            var path = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User) ?? "";
-            return path.Split(';').Any(p => p.Trim().TrimEnd('\\').Equals(CliRoot, StringComparison.OrdinalIgnoreCase));
+            var user = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User) ?? "";
+            var machine = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine) ?? "";
+            return (user + ";" + machine).Split(';')
+                .Any(p => p.Trim().Trim('"').TrimEnd('\\').Equals(CliRoot, StringComparison.OrdinalIgnoreCase));
         }
+
+        private static string _userDataCache;
+        private static string _userDataExe;
 
         private static string UserDataDirectory()
         {
             var exe = InstalledExe();
             if (exe != null)
             {
+                if (_userDataCache != null && _userDataExe == exe && Directory.Exists(_userDataCache))
+                    return _userDataCache;
+
                 var output = new StringBuilder();
                 RunProcess(exe, "path userdata", line => output.AppendLine(line), 30000);
                 var last = output.ToString().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(l => l.Trim())
                     .LastOrDefault(l => l.Length > 0);
-                if (!string.IsNullOrEmpty(last) && Directory.Exists(last)) return last;
+                if (!string.IsNullOrEmpty(last) && Directory.Exists(last))
+                {
+                    _userDataCache = last;
+                    _userDataExe = exe;
+                    return last;
+                }
             }
 
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "spicetify");
         }
 
-        private static string ReadMarker(string userdata)
+        private static string ReadMarketplaceVersion(string userdata)
         {
+            var dir = Path.Combine(userdata, "CustomApps", "marketplace");
             try
             {
-                var marker = Path.Combine(userdata, "CustomApps", "marketplace", ".marketplace-version");
-                return File.Exists(marker) ? File.ReadAllText(marker).Trim() : null;
+                var marker = Path.Combine(dir, ".marketplace-version");
+                if (File.Exists(marker))
+                {
+                    var version = File.ReadAllText(marker).Trim();
+                    if (version.Length > 0) return version;
+                }
+
+                // A copy installed by hand, or by an older build of this app, has no
+                // marker, so the bundle's own version string is the next best source.
+                foreach (var file in new[] { "extension.js", "index.js" })
+                {
+                    var path = Path.Combine(dir, file);
+                    if (!File.Exists(path)) continue;
+
+                    var match = System.Text.RegularExpressions.Regex.Match(
+                        File.ReadAllText(path), @"Marketplace\s*=\s*\{[^}]*?version\s*:\s*""(\d+\.\d+\.\d+)""");
+                    if (match.Success) return match.Groups[1].Value;
+                }
             }
             catch
             {
-                return null;
+                // An unreadable install is reported as installed with no version.
             }
+
+            return null;
         }
 
         /* ------------------------------------------------------------- spotify */
@@ -1375,6 +1573,29 @@ namespace SpicetifyUpdater
         {
             var roaming = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Spotify", "Spotify.exe");
             if (File.Exists(roaming)) return roaming;
+
+            // The Store build uses an execution alias instead of a normal install.
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var alias = Path.Combine(local, "Microsoft", "WindowsApps", "Spotify.exe");
+            if (File.Exists(alias)) return alias;
+
+            try
+            {
+                var packages = Path.Combine(local, "Packages");
+                if (Directory.Exists(packages))
+                {
+                    foreach (var dir in Directory.GetDirectories(packages, "SpotifyAB.SpotifyMusic_*"))
+                    {
+                        var store = Path.Combine(dir, "LocalCache", "Roaming", "Spotify", "Spotify.exe");
+                        if (File.Exists(store)) return store;
+                    }
+                }
+            }
+            catch
+            {
+                // A locked package folder just means this path is not the install.
+            }
+
             return null;
         }
 

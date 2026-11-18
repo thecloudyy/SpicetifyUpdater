@@ -23,7 +23,7 @@ Either way it is a native WPF window: no Electron, no bundled browser, no Node.j
 The app checks its own GitHub releases on launch and, when something newer exists, puts an
 **Update to v1.1.0** button in the header. Pressing it downloads the release's setup, quits the app and
 runs the Inno installer silently (no wizard), then opens the installed copy again. When there is nothing
-newer it just says so in the log. If a release only ships a portable exe, that exe is swapped in place
+newer it just says so in the status bar. If a release only ships a portable exe, that exe is swapped in place
 instead; if the folder is not writable it says so instead of leaving a half-written file.
 
 ## What it does
