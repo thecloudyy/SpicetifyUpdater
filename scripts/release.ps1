@@ -149,8 +149,11 @@ try {
     }
 
     # Ask origin, not the local clone, so a stale local tag cannot block or fake a release.
+    # 0 means the tag is there, 2 means it is not; anything else is a failure to ask, which must
+    # not be mistaken for a free version.
     & git ls-remote --exit-code --tags origin "refs/tags/v$Version" *> $null
     if ($LASTEXITCODE -eq 0) { throw "tag v$Version already exists on origin" }
+    if ($LASTEXITCODE -ne 2) { throw "git ls-remote failed ($LASTEXITCODE), cannot check whether v$Version exists" }
 
     $project = Join-Path $root 'SpicetifyUpdater.csproj'
     $declared = [regex]::Match((Get-Content $project -Raw), '<Version>([^<]+)</Version>')
