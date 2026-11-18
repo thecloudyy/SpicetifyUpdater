@@ -1,17 +1,23 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Notes = '',
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$DraftOnly
 )
 
 # Publishes a release: bump, build, check, upload, publish.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2
 #   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2 -DryRun
+#   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2 -DraftOnly
 #
-# The release is created as a draft, the files are uploaded and checked while it is still
-# hidden, and only then is it published. A failure anywhere in that half leaves nothing
-# public and no tag behind, so the script can simply be run again.
+# The release is created as a draft, the files are uploaded and verified while it is still
+# hidden, and only then is it published. A failure in that half leaves nothing public and no
+# tag, so the same command can simply be run again.
+#
+# -DryRun stops after the local builds and checksums; -DraftOnly also creates a draft, uploads
+# to it, verifies the assets and deletes the draft, which exercises the publish half for real
+# without announcing anything.
 #
 # Needs a token with release access, from GH_TOKEN, `gh auth token`, or a stored git credential.
 
@@ -80,7 +86,7 @@ function Get-Iscc {
     Fail 'ISCC.exe not found: install Inno Setup 6 or 7, or put iscc on PATH'
 }
 
-function Header([string]$token) {
+function New-Header([string]$token) {
     return @{
         Authorization = "token $token"
         Accept        = 'application/vnd.github+json'
@@ -88,12 +94,31 @@ function Header([string]$token) {
     }
 }
 
-function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) {
-    $name = [IO.Path]::GetFileName($path)
-    $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
-           "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($label))"
-    $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
-    Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
+function New-Draft($headers, [string]$sha) {
+    return Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
+        -Headers $headers -ContentType 'application/json' -Body (@{
+            tag_name         = "v$Version"
+            target_commitish = $sha
+            name             = "Spicetify Updater $Version"
+            body             = $Notes
+            draft            = $true
+            prerelease       = $false
+        } | ConvertTo-Json)
+}
+
+function Add-Assets($headers, [int64]$releaseId, [string]$portable, [string]$setup, [string]$checksums) {
+    foreach ($item in @(
+            @($portable, 'Portable app (no install)'),
+            @($setup, 'Windows installer (Inno Setup)'),
+            # Last on purpose: the checksum file only ever describes files already uploaded.
+            @($checksums, 'SHA-256 checksums'))) {
+        $path = $item[0]
+        $name = [IO.Path]::GetFileName($path)
+        $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
+               "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($item[1]))"
+        $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
+        Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
+    }
 }
 
 function Assert-Assets($release, [hashtable]$expected) {
@@ -184,10 +209,33 @@ try {
     $checksumPath = Join-Path $dist $checksumName
     [IO.File]::WriteAllText($checksumPath, $checksumText)
 
+    $expected = @{}
+    $expected[$portableName] = (Get-Item $portable).Length
+    $expected[$setupName] = (Get-Item $setup).Length
+    $expected[$checksumName] = (Get-Item $checksumPath).Length
+
     if ($DryRun) {
         Step 'dry run'
         git checkout -- SpicetifyUpdater.csproj installer.iss
-        Write-Host "  version files restored, nothing committed or published"
+        Write-Host '  version files restored, nothing committed or published'
+        exit 0
+    }
+
+    $headers = New-Header $token
+
+    if ($DraftOnly) {
+        Step 'draft check'
+        $release = New-Draft $headers (git rev-parse HEAD).Trim()
+        try {
+            Add-Assets $headers $release.id $portable $setup $checksumPath
+            Assert-Assets (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers) $expected
+            Write-Host '  ok    a draft release and its uploads work'
+        }
+        finally {
+            Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
+            git checkout -- SpicetifyUpdater.csproj installer.iss
+            Write-Host '  draft deleted, version files restored, nothing published'
+        }
         exit 0
     }
 
@@ -198,38 +246,19 @@ try {
     git push origin main
     if ($LASTEXITCODE -ne 0) { Fail 'git push failed' }
 
-    $sha = (git rev-parse HEAD).Trim()
-    $expected = @{}
-    $expected[$portableName] = (Get-Item $portable).Length
-    $expected[$setupName] = (Get-Item $setup).Length
-    $expected[$checksumName] = (Get-Item $checksumPath).Length
-
-    # Everything from here on happens while the release is a draft: any failure leaves
-    # nothing public and no tag, so the same command can just be run again.
-    $headers = Header $token
+    # From here the release is a draft until everything has been uploaded and verified, so a
+    # failure leaves nothing public and no tag, and the command can just be run again.
     $release = $null
     try {
         Step 'draft release'
-        $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
-            -Headers $headers -ContentType 'application/json' -Body (@{
-                tag_name         = "v$Version"
-                target_commitish = $sha
-                name             = "Spicetify Updater $Version"
-                body             = $Notes
-                draft            = $true
-                prerelease       = $false
-            } | ConvertTo-Json)
+        $release = New-Draft $headers (git rev-parse HEAD).Trim()
         Write-Host "  ok    draft $($release.id)"
 
         Step 'upload'
-        Send-Asset $headers $release.id $portable 'Portable app (no install)'
-        Send-Asset $headers $release.id $setup 'Windows installer (Inno Setup)'
-        # Last on purpose: the checksum file only ever describes files already uploaded.
-        Send-Asset $headers $release.id $checksumPath 'SHA-256 checksums'
+        Add-Assets $headers $release.id $portable $setup $checksumPath
 
         Step 'verify draft'
-        $draft = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers
-        Assert-Assets $draft $expected
+        Assert-Assets (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers) $expected
 
         Step 'publish'
         $published = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" `
@@ -240,7 +269,6 @@ try {
         Step 'verify published'
         $live = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/v$Version" -Headers $headers
         Assert-Assets $live $expected
-        if (-not $live.assets) { throw 'the published release has no assets' }
 
         $checksumAsset = $live.assets | Where-Object { $_.name -eq $checksumName }
         $downloaded = (Invoke-WebRequest -Uri $checksumAsset.browser_download_url -Headers $headers -UseBasicParsing).Content
@@ -249,9 +277,7 @@ try {
     }
     catch {
         Write-Host "  FAIL  $($_.Exception.Message)"
-        if ($release) {
-            Write-Host "  nothing is public: draft $($release.id) at https://github.com/$repo/releases"
-        }
+        if ($release) { Write-Host "  nothing is public: draft $($release.id) at https://github.com/$repo/releases" }
         Write-Host ''
         Write-Host 'RELEASE ABORTED'
         exit 1
