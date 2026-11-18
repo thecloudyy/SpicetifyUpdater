@@ -98,7 +98,31 @@ function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) 
     $name = [IO.Path]::GetFileName($path)
     $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
            "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($label))"
-    $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
+
+    # uploads.github.com drops a request now and then (408, 5xx, a closed connection). The file
+    # has already been built and checked by this point, so three attempts are worth much more
+    # than rerunning the whole release. Anything else, like a bad token, fails immediately.
+    $asset = $null
+    foreach ($attempt in 1..3) {
+        try {
+            $asset = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $path -ContentType 'application/octet-stream'
+            break
+        }
+        catch {
+            $status = 0
+            if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+            $fatal = $status -ge 400 -and $status -lt 500 -and $status -notin 408, 429
+            if ($fatal -or $attempt -eq 3) { throw }
+
+            # A lost response can still mean the upload landed, so look before sending it again.
+            $landed = (Read-Release $headers $releaseId).assets | Where-Object { $_.name -eq $name }
+            if ($landed -and $landed.state -eq 'uploaded') { $asset = $landed; break }
+
+            Write-Host "  ..    upload of $name failed ($status), retrying ($attempt of 3)"
+            Start-Sleep -Seconds (2 * $attempt)
+        }
+    }
+
     Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
 }
 
