@@ -42,8 +42,9 @@ instead; if the folder is not writable it says so instead of leaving a half-writ
 - **Checked downloads** — every archive is compared with the release's published size and sha256
   before anything is extracted, so a truncated or tampered download stops with a message instead of
   a broken install. Each release here ships a `SHA256SUMS.txt` next to its files, which the app
-  reads from the release page (so the name and hash checks need no API requests). Releases are
-  stamped with `python scripts/add_checksums.py [tag]` after their files are uploaded.
+  reads from the release page (so the name and hash checks need no API requests). `scripts/release.ps1`
+  produces it for every release, and `python scripts/add_checksums.py [tag]` can add one to an
+  older release.
 - **Update checks** — the latest tag comes from GitHub's `releases/latest` redirect, and the
   files to download come from the release page plus a `HEAD` for their size, so checking and
   installing both cost 0 of the 60 hourly requests. The API is only used if a release page
@@ -70,7 +71,19 @@ To build the installer, install [Inno Setup 6](https://jrsoftware.org/isdl.php) 
 iscc installer.iss
 ```
 
-That writes `dist\Spicetify-Updater-Setup-<version>.exe`.
+That writes `dist\Spicetify-Updater-<version>-win-x64-setup.exe`.
+
+## Release
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2
+```
+
+Bumps the three version fields, builds the exe and the installer, runs the checks, and only then
+creates the release: portable exe, setup, and `SHA256SUMS.txt` uploaded last so it always describes
+files that are already attached. It also verifies the uploaded sizes and re-downloads the checksum
+file to compare it. Add `-Notes "…"` for the release body, or `-DryRun` to do everything except
+commit, push and publish.
 
 To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with a PNG payload.
 
@@ -95,8 +108,8 @@ that breaks the release lookup or download verification fails before a release i
   spicetify commands
 - `SpicetifyUpdater.csproj` — `net48`, `WinExe`
 - `build/` — app icon
-- `scripts/` — `run-checks.ps1` and `Checks.cs` (the checks above), `add_checksums.py` (publishes
-  `SHA256SUMS.txt` for a release)
+- `scripts/` — `release.ps1` (cuts a release), `run-checks.ps1` and `Checks.cs` (the checks above),
+  `add_checksums.py` (adds `SHA256SUMS.txt` to a release that predates the script)
 
 Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
 `--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the
