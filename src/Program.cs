@@ -1366,11 +1366,15 @@ namespace SpicetifyUpdater
         private const string ColorsUrl = "https://raw.githubusercontent.com/spicetify/marketplace/main/resources/color.ini";
         private const string UserAgent = "SpicetifyUpdater/2.0 (+https://spicetify.app)";
 
-        private static readonly Dictionary<string, Release> ReleaseCache = new Dictionary<string, Release>();
-        private static readonly Dictionary<string, DateTime> ReleaseCacheTime = new Dictionary<string, DateTime>();
-        private static readonly Dictionary<string, string> TagCache = new Dictionary<string, string>();
-        private static readonly Dictionary<string, DateTime> TagCacheTime = new Dictionary<string, DateTime>();
-        private static readonly Dictionary<string, string> RawTagCache = new Dictionary<string, string>();
+        // The newest tag of a repo, as GitHub spells it ("v2.46.7") and without the "v".
+        private sealed class RepoTag
+        {
+            public string Tag;
+            public string RawTag;
+            public DateTime At;
+        }
+
+        private static readonly Dictionary<string, RepoTag> Tags = new Dictionary<string, RepoTag>();
 
         // The asset list of the last successful API lookup, kept on disk so an install can
         // still verify sizes and digests when GitHub's API is unavailable.
@@ -1428,6 +1432,7 @@ namespace SpicetifyUpdater
         private sealed class Release
         {
             public string Tag;
+            public string RawTag;
             public List<Asset> Assets = new List<Asset>();
         }
 
@@ -1443,9 +1448,14 @@ namespace SpicetifyUpdater
 
         private static string RawTag(string repo, string tag)
         {
-            string raw;
-            if (RawTagCache.TryGetValue(repo, out raw) && !string.IsNullOrEmpty(raw)) return raw;
+            RepoTag known;
+            if (Tags.TryGetValue(repo, out known) && !string.IsNullOrEmpty(known.RawTag)) return known.RawTag;
             return "v" + tag;
+        }
+
+        private static void Remember(string repo, string tag, string rawTag)
+        {
+            Tags[repo] = new RepoTag { Tag = tag, RawTag = rawTag, At = DateTime.Now };
         }
 
         // github.com/<repo>/releases/expanded_assets/<tag> lists a release's files as plain
@@ -1489,7 +1499,7 @@ namespace SpicetifyUpdater
 
         private static bool LooksLikeChecksums(string name)
         {
-            var lower = (name ?? "").ToLowerInvariant();
+            var lower = name.ToLowerInvariant();
             return lower.Contains("sha256") || lower.Contains("checksum");
         }
 
@@ -1497,9 +1507,9 @@ namespace SpicetifyUpdater
         // sha256 instead of only by its exact size; a release without one just keeps the size.
         private static void AttachChecksum(List<Asset> files, Asset asset)
         {
-            if (asset == null || Sha256FromDigest(asset.Digest) != null) return;
+            if (asset == null || files == null || Sha256FromDigest(asset.Digest) != null) return;
 
-            foreach (var file in files ?? new List<Asset>())
+            foreach (var file in files)
             {
                 if (!LooksLikeChecksums(file.Name)) continue;
 
@@ -1556,24 +1566,17 @@ namespace SpicetifyUpdater
             return true;
         }
 
-        // The release page first (no quota), the API second (it also carries the digest).
+        // The release page first (no quota), the API second. A release the API describes but
+        // the page does not is not the release being installed, so it is refused.
         private static Asset AssetFor(string repo, string tag, Func<string, bool> match)
         {
             var fromPage = AssetFromPage(repo, tag, match);
             if (fromPage != null) return fromPage;
 
-            var release = LatestRelease(repo, tag, false);
+            var release = LatestRelease(repo, tag);
             if (!string.Equals(release.Tag, tag, StringComparison.OrdinalIgnoreCase)) return null;
 
-            foreach (var asset in release.Assets)
-            {
-                if (!match(asset.Name)) continue;
-
-                AttachChecksum(PageFiles(repo, tag), asset);
-                return asset;
-            }
-
-            return null;
+            return release.Assets.FirstOrDefault(a => match(a.Name));
         }
 
         private static Asset OurAsset(string tag, string suffix)
@@ -1631,16 +1634,9 @@ namespace SpicetifyUpdater
 
         // "tag" is the release the caller is about to install, and only a cache entry for
         // that exact tag may stand in for the API, so a stale cache never serves old files.
-        private static async Task<Release> LatestReleaseAsync(string repo, string tag, bool force)
+        private static async Task<Release> LatestReleaseAsync(string repo, string tag)
         {
             EnsureTls();
-
-            if (!force && ReleaseCache.ContainsKey(repo))
-            {
-                DateTime taken;
-                if (ReleaseCacheTime.TryGetValue(repo, out taken) && (DateTime.Now - taken).TotalMinutes < 2)
-                    return ReleaseCache[repo];
-            }
 
             LoadReleaseCache();
             Release cached;
@@ -1656,8 +1652,6 @@ namespace SpicetifyUpdater
                     var release = ParseRelease(await client.GetStringAsync(
                         "https://api.github.com/repos/" + repo + "/releases/latest"));
                     SaveReleaseCache(repo, release);
-                    ReleaseCache[repo] = release;
-                    ReleaseCacheTime[repo] = DateTime.Now;
                     return release;
                 }
             }
@@ -1668,11 +1662,7 @@ namespace SpicetifyUpdater
                 // only when it describes the release that is actually being installed.
                 if (cached != null && !string.IsNullOrEmpty(tag) &&
                     string.Equals(cached.Tag, tag, StringComparison.OrdinalIgnoreCase))
-                {
-                    ReleaseCache[repo] = cached;
-                    ReleaseCacheTime[repo] = DateTime.Now;
                     return cached;
-                }
 
                 throw;
             }
@@ -1681,7 +1671,8 @@ namespace SpicetifyUpdater
         private static Release ParseRelease(string json)
         {
             var data = (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(json);
-            var release = new Release { Tag = Convert.ToString(data["tag_name"]).TrimStart('v') };
+            var rawTag = Convert.ToString(data["tag_name"]);
+            var release = new Release { Tag = rawTag.TrimStart('v'), RawTag = rawTag };
             foreach (var item in (object[])data["assets"])
             {
                 var asset = (Dictionary<string, object>)item;
@@ -1792,9 +1783,9 @@ namespace SpicetifyUpdater
             }
         }
 
-        private static Release LatestRelease(string repo, string tag, bool force)
+        private static Release LatestRelease(string repo, string tag)
         {
-            return LatestReleaseAsync(repo, tag, force).GetAwaiter().GetResult();
+            return LatestReleaseAsync(repo, tag).GetAwaiter().GetResult();
         }
 
         private static string LatestTag(string repo, bool force)
@@ -1803,18 +1794,15 @@ namespace SpicetifyUpdater
         }
 
         // github.com/releases/latest redirects to the newest tag and is served outside the
-        // API quota, so a version check costs nothing even when the hourly limit is gone.
-        // The API is only needed for asset lists, which happens when something is installed.
+        // API quota, so a version check costs nothing; the API is only used when the page
+        // cannot be read at all.
         private static async Task<string> LatestTagAsync(string repo, bool force)
         {
             EnsureTls();
 
-            if (!force && TagCache.ContainsKey(repo))
-            {
-                DateTime taken;
-                if (TagCacheTime.TryGetValue(repo, out taken) && (DateTime.Now - taken).TotalMinutes < 2)
-                    return TagCache[repo];
-            }
+            RepoTag known;
+            if (!force && Tags.TryGetValue(repo, out known) && (DateTime.Now - known.At).TotalMinutes < 2)
+                return known.Tag;
 
             using (var handler = new HttpClientHandler { AllowAutoRedirect = false })
             using (var client = new HttpClient(handler))
@@ -1837,9 +1825,7 @@ namespace SpicetifyUpdater
                             if (tag.Length > 0)
                             {
                                 // Release URLs need the tag exactly as GitHub spells it.
-                                RawTagCache[repo] = rawTag;
-                                TagCache[repo] = tag;
-                                TagCacheTime[repo] = DateTime.Now;
+                                Remember(repo, tag, rawTag);
                                 return tag;
                             }
                         }
@@ -1849,17 +1835,9 @@ namespace SpicetifyUpdater
 
             // github.com did not redirect; the API can still answer. No tag is expected here,
             // so a stored release must not be passed off as the latest one.
-            var release = await LatestReleaseAsync(repo, null, force);
-            TagCache[repo] = release.Tag;
-            TagCacheTime[repo] = DateTime.Now;
+            var release = await LatestReleaseAsync(repo, null);
+            Remember(repo, release.Tag, release.RawTag);
             return release.Tag;
-        }
-
-        private static bool IsRateLimitError(Exception ex)
-        {
-            var message = ex == null ? "" : (ex.Message ?? "");
-            return message.IndexOf("403", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   message.IndexOf("rate limit", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /* ------------------------------------------------ last known versions */
@@ -1953,63 +1931,14 @@ namespace SpicetifyUpdater
             status.MarketplaceInstalled = File.Exists(Path.Combine(status.MarketplacePath, "manifest.json"));
             if (status.MarketplaceInstalled) status.MarketplaceVersion = ReadMarketplaceVersion(userdata);
 
-            // Once GitHub says the hourly limit is gone, asking twice more only wastes
-            // time, so the other two lookups fall back to what we already know.
-            var blocked = false;
-
-            string cliLookup = null;
-            if (!blocked)
-            {
-                try
-                {
-                    cliLookup = LatestTag(CliRepo, force);
-                }
-                catch (Exception ex)
-                {
-                    status.ReleaseError = ex.Message;
-                    blocked = IsRateLimitError(ex);
-                }
-            }
-
-            if (cliLookup != null)
-            {
-                status.CliLatest = cliLookup;
-                SaveKnownVersion("cli", cliLookup);
-            }
-            else
-            {
-                // GitHub is sometimes rate limited or offline; stale numbers beat "-".
-                status.CliLatest = KnownVersion("cli");
-                status.VersionsFromCache = !string.IsNullOrEmpty(status.CliLatest);
-            }
+            // These read github.com's release redirect and cost no API quota, so a failure
+            // means the network; each card then shows the last version this machine saw.
+            status.CliLatest = LatestTagOrKnown(CliRepo, "cli", force, ref status.ReleaseError);
 
             status.CliUpdate = status.CliInstalled && !string.IsNullOrEmpty(status.CliVersion) &&
                 !string.IsNullOrEmpty(status.CliLatest) && Compare(status.CliLatest, status.CliVersion) > 0;
 
-            string marketLookup = null;
-            if (!blocked)
-            {
-                try
-                {
-                    marketLookup = LatestTag(MarketRepo, force);
-                }
-                catch (Exception ex)
-                {
-                    if (status.ReleaseError == null) status.ReleaseError = ex.Message;
-                    blocked = IsRateLimitError(ex);
-                }
-            }
-
-            if (marketLookup != null)
-            {
-                status.MarketplaceLatest = marketLookup;
-                SaveKnownVersion("marketplace", marketLookup);
-            }
-            else
-            {
-                status.MarketplaceLatest = KnownVersion("marketplace");
-                status.VersionsFromCache = status.VersionsFromCache || !string.IsNullOrEmpty(status.MarketplaceLatest);
-            }
+            status.MarketplaceLatest = LatestTagOrKnown(MarketRepo, "marketplace", force, ref status.ReleaseError);
 
             // Without a version there is nothing to compare: report the install and
             // offer Reinstall instead of a made-up "update available".
@@ -2019,34 +1948,34 @@ namespace SpicetifyUpdater
                 Compare(status.MarketplaceLatest, status.MarketplaceVersion) > 0;
 
             status.SelfVersion = SelfVersion();
-            string selfLookup = null;
-            if (!blocked)
-            {
-                try
-                {
-                    selfLookup = LatestTag(SelfRepo, force);
-                }
-                catch (Exception ex)
-                {
-                    if (status.ReleaseError == null) status.ReleaseError = ex.Message;
-                }
-            }
-
-            if (selfLookup != null)
-            {
-                status.SelfLatest = selfLookup;
-                SaveKnownVersion("updater", selfLookup);
-            }
-            else
-            {
-                status.SelfLatest = KnownVersion("updater");
-                status.VersionsFromCache = status.VersionsFromCache || !string.IsNullOrEmpty(status.SelfLatest);
-            }
+            status.SelfLatest = LatestTagOrKnown(SelfRepo, "updater", force, ref status.ReleaseError);
 
             status.SelfUpdate = !string.IsNullOrEmpty(status.SelfLatest) &&
                 Compare(status.SelfLatest, status.SelfVersion) > 0;
 
+            // Only a failed lookup can leave a card showing a remembered version.
+            status.VersionsFromCache = status.ReleaseError != null &&
+                (!string.IsNullOrEmpty(status.CliLatest) ||
+                 !string.IsNullOrEmpty(status.MarketplaceLatest) ||
+                 !string.IsNullOrEmpty(status.SelfLatest));
+
             return status;
+        }
+
+        // The newest tag, or the last one this machine saw when the lookup fails.
+        private static string LatestTagOrKnown(string repo, string key, bool force, ref string error)
+        {
+            try
+            {
+                var tag = LatestTag(repo, force);
+                SaveKnownVersion(key, tag);
+                return tag;
+            }
+            catch (Exception ex)
+            {
+                if (error == null) error = ex.Message;
+                return KnownVersion(key);
+            }
         }
 
         public static string SelfVersion()
@@ -2249,9 +2178,7 @@ namespace SpicetifyUpdater
             try
             {
                 var archive = Path.Combine(work, asset.Name);
-                log("Downloading " + asset.Name);
-                Download(asset.Url, archive, progress);
-                VerifyDownload(asset, archive, log);
+                Fetch(asset, archive, progress, log);
 
                 log("Extracting");
                 var unpacked = Path.Combine(work, "unpacked");
@@ -2292,16 +2219,16 @@ namespace SpicetifyUpdater
 
             var tag = LatestTag(MarketRepo, true);
             var asset = AssetFor(MarketRepo, tag, a => a.Equals("marketplace.zip", StringComparison.OrdinalIgnoreCase));
-            if (asset == null) asset = AssetFor(MarketRepo, tag, a => true);
+            if (asset == null)
+                asset = AssetFor(MarketRepo, tag, a =>
+                    a.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) && !LooksLikeChecksums(a));
             if (asset == null) throw new InvalidOperationException("No marketplace build in the latest release");
 
             var work = TempDir("spicetify-marketplace-");
             try
             {
                 var archive = Path.Combine(work, "marketplace.zip");
-                log("Downloading " + asset.Name);
-                Download(asset.Url, archive, progress);
-                VerifyDownload(asset, archive, log);
+                Fetch(asset, archive, progress, log);
 
                 log("Extracting");
                 var unpacked = Path.Combine(work, "unpacked");
@@ -2396,9 +2323,7 @@ namespace SpicetifyUpdater
                 throw new InvalidOperationException("Release v" + tag + " has no downloadable exe");
 
             var download = Path.Combine(Path.GetTempPath(), asset.Name);
-            log("Downloading " + asset.Name);
-            Download(asset.Url, download, progress);
-            VerifyDownload(asset, download, log);
+            Fetch(asset, download, progress, log);
 
             var current = Process.GetCurrentProcess().MainModule.FileName;
 
@@ -2523,6 +2448,13 @@ namespace SpicetifyUpdater
 
         /* ------------------------------------------------------------ downloads */
 
+        private static void Fetch(Asset asset, string destination, Action<double> progress, Action<string> log)
+        {
+            log("Downloading " + asset.Name);
+            Download(asset.Url, destination, progress);
+            VerifyDownload(asset, destination, log);
+        }
+
         // GitHub publishes a size for every asset and a sha256 digest for those uploaded
         // with one. A file that does not match is a truncated or tampered transfer, and
         // extracting it would install a broken Spicetify, so nothing is touched.
@@ -2590,7 +2522,7 @@ namespace SpicetifyUpdater
             if (!text.Substring(0, colon).Equals("sha256", StringComparison.OrdinalIgnoreCase)) return null;
 
             var hex = text.Substring(colon + 1).Trim();
-            return hex.Length == 64 ? hex : null;
+            return IsSha256Hex(hex) ? hex : null;
         }
 
         private static void Download(string url, string destination, Action<double> progress)
