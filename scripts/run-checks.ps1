@@ -1,5 +1,6 @@
 # Builds Spicetify Updater, compiles scripts/Checks.cs against the built exe and runs it.
-# Also checks the two places the version lives, and runs the app's own --selftest.
+# Also checks the two places the version lives, runs the app's own --selftest, and runs the
+# offline upload retry probe.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts/run-checks.ps1
 
@@ -74,6 +75,11 @@ try {
         Write-Host '  FAIL  selftest wrote no json'
         $result = 1
     }
+
+    Write-Host ''
+    Write-Host '== upload retry probe (offline)'
+    & (Join-Path $root 'scripts\retry-probe.ps1')
+    if ($LASTEXITCODE -ne 0) { $result = 1 }
 
     Write-Host ''
     if ($result -eq 0) { Write-Host 'EVERYTHING PASSED' } else { Write-Host 'SOMETHING FAILED' }

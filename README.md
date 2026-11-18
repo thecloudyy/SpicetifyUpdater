@@ -105,8 +105,27 @@ checksum-file parsing, download verification (size, sha256, empty and missing fi
 integrity, the cache-tag rule, then live lookups against GitHub plus a real download from a release,
 and finally `--selftest`. It exits non-zero on the first failure and needs no credentials.
 
-GitHub Actions runs the same script on `windows-latest` for every push and pull request, so a change
-that breaks the release lookup or download verification fails before a release is cut.
+It also runs `scripts/retry-probe.ps1`, which points `release.ps1`'s upload retry loop at a local
+stand-in server (it needs python, like `scripts/add_checksums.py`): a transient failure must be
+retried, a client error must not be, and an upload whose response was lost must not be sent again.
+That part is offline and adds about fifteen seconds.
+
+For the self-update path there is a second probe, which needs an installed app rather than a fresh
+build, so it is not part of the run above:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/self-update-probe.ps1 -Current
+```
+
+It compiles `scripts/SelfUpdateProbe.cs` and drives the probed build's own self-update members — the
+status the window would show, the latest tag read from github.com, the setup asset and its checksum
+from `SHA256SUMS.txt`, a real download verified against it, and a one-byte-corrupted copy refused.
+It probes the installed app by default (or one passed with `-Exe`) and spends no API quota; without
+`-Current` it expects an update to be offered, with `-Current` it expects the app to be up to date,
+which is how an upgrade is shown to have closed the loop.
+
+GitHub Actions runs `run-checks.ps1` on `windows-latest` for every push and pull request, so a change
+that breaks the release lookup, download verification or upload retry fails before a release is cut.
 
 ## Layout
 
@@ -115,7 +134,9 @@ that breaks the release lookup or download verification fails before a release i
 - `SpicetifyUpdater.csproj` — `net48`, `WinExe`
 - `build/` — app icon
 - `scripts/` — `release.ps1` (cuts a release), `run-checks.ps1` and `Checks.cs` (the checks above),
-  `add_checksums.py` (adds `SHA256SUMS.txt` to a release that predates the script)
+  `retry-probe.ps1` with `flaky-upload.py` (the upload retry probe), `self-update-probe.ps1` with
+  `SelfUpdateProbe.cs` (the self-update probe), `add_checksums.py` (adds `SHA256SUMS.txt` to a
+  release that predates the script)
 
 Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
 `--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the
