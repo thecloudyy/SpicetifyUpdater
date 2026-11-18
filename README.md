@@ -13,7 +13,7 @@ Two ways, both from the [latest release](../../releases/latest):
 | File | What it is |
 | --- | --- |
 | `Spicetify-Updater-<version>-win-x64-setup.exe` | Inno Setup installer. Start-menu entry, optional desktop shortcut, registered uninstaller, per-user install so no admin prompt appears. |
-| `Spicetify-Updater-<version>-win-x64.exe` | The same app as a standalone portable exe, ~60 KB. |
+| `Spicetify-Updater-<version>-win-x64.exe` | The same app as a standalone portable exe, ~105 KB. |
 
 Either way it is a native WPF window: no Electron, no bundled browser, no Node.js, and it needs only
 .NET Framework 4.8, which ships with Windows 10 and 11.
