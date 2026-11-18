@@ -84,8 +84,8 @@ pushes, then publishes through a draft: the portable exe, the setup and `SHA256S
 uploaded in that order (checksums last, so the file only ever describes attachments that already
 exist), the uploaded sizes are verified, and only then is the release published, after which the
 published checksum file is downloaded and compared. A failure before that last step removes the
-draft it created, leaves no tag and nothing public, and reverts the version bump, so the same
-command can simply be run again.
+draft it created and leaves no tag and nothing public; the version files are restored if the
+bump had not been committed yet, so the same command can simply be run again.
 
 `-Notes "…"` sets the release body. `-DryRun` stops after the checksums are written; `-DraftOnly`
 also uploads to a throwaway draft, verifies it and deletes it, which exercises the publish half
