@@ -37,6 +37,9 @@ instead; if the folder is not writable it says so instead of leaving a half-writ
   Useful when Spotify won't load after an update.
 - **Close Spotify automatically** — stops the client before patching and reopens it afterwards.
 - **Maintenance** — Backup & Apply, Apply, and Restore.
+- **Checked downloads** — every archive is compared with the release's published size and sha256
+  before anything is extracted, so a truncated or tampered download stops with a message instead of
+  a broken install.
 - **Update checks** — the latest tag comes from GitHub's `releases/latest` redirect, which is
   served outside the API quota, so checking costs 0 of the 60 hourly requests and the cards show
   live numbers. The API is only touched when an update is actually downloaded, and its response

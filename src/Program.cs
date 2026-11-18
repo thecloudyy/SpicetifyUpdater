@@ -1432,7 +1432,17 @@ namespace SpicetifyUpdater
         private sealed class Release
         {
             public string Tag;
-            public List<KeyValuePair<string, string>> Assets = new List<KeyValuePair<string, string>>();
+            public List<Asset> Assets = new List<Asset>();
+        }
+
+        // One downloadable file of a release, with what GitHub publishes about it so the
+        // download can be checked before anything is extracted.
+        private sealed class Asset
+        {
+            public string Name;
+            public string Url;
+            public long Size;
+            public string Digest;
         }
 
         private static async Task<Release> LatestReleaseAsync(string repo, bool force)
@@ -1489,9 +1499,24 @@ namespace SpicetifyUpdater
             foreach (var item in (object[])data["assets"])
             {
                 var asset = (Dictionary<string, object>)item;
-                release.Assets.Add(new KeyValuePair<string, string>(
-                    Convert.ToString(asset["name"]),
-                    Convert.ToString(asset["browser_download_url"])));
+                var entry = new Asset
+                {
+                    Name = Convert.ToString(asset["name"]),
+                    Url = Convert.ToString(asset["browser_download_url"])
+                };
+
+                object size;
+                if (asset.TryGetValue("size", out size) && size != null)
+                {
+                    long bytes;
+                    if (long.TryParse(Convert.ToString(size), out bytes)) entry.Size = bytes;
+                }
+
+                object digest;
+                if (asset.TryGetValue("digest", out digest) && digest != null)
+                    entry.Digest = Convert.ToString(digest);
+
+                release.Assets.Add(entry);
             }
 
             return release;
@@ -1528,8 +1553,16 @@ namespace SpicetifyUpdater
                         foreach (var pair in (object[])assets)
                         {
                             var fields = (object[])pair;
-                            release.Assets.Add(new KeyValuePair<string, string>(
-                                Convert.ToString(fields[0]), Convert.ToString(fields[1])));
+                            var asset = new Asset { Name = Convert.ToString(fields[0]), Url = Convert.ToString(fields[1]) };
+
+                            if (fields.Length > 2 && fields[2] != null)
+                            {
+                                long bytes;
+                                if (long.TryParse(Convert.ToString(fields[2]), out bytes)) asset.Size = bytes;
+                            }
+
+                            if (fields.Length > 3 && fields[3] != null) asset.Digest = Convert.ToString(fields[3]);
+                            release.Assets.Add(asset);
                         }
                     }
 
@@ -1555,7 +1588,7 @@ namespace SpicetifyUpdater
                 {
                     var assets = new List<object>();
                     foreach (var asset in entry.Value.Release.Assets)
-                        assets.Add(new object[] { asset.Key, asset.Value });
+                        assets.Add(new object[] { asset.Name, asset.Url, asset.Size, asset.Digest });
 
                     data[entry.Key] = new Dictionary<string, object>
                     {
@@ -2021,19 +2054,20 @@ namespace SpicetifyUpdater
         public static string InstallCli(Action<string> log, Action<double> progress)
         {
             var release = LatestRelease(CliRepo, true);
-            var asset = release.Assets.FirstOrDefault(a => a.Key.EndsWith("windows-x64.zip", StringComparison.OrdinalIgnoreCase));
-            if (asset.Key == null) throw new InvalidOperationException("No Windows x64 build in release v" + release.Tag);
+            var asset = release.Assets.FirstOrDefault(a => a.Name.EndsWith("windows-x64.zip", StringComparison.OrdinalIgnoreCase));
+            if (asset == null) throw new InvalidOperationException("No Windows x64 build in release v" + release.Tag);
 
             var work = TempDir("spicetify-cli-");
             try
             {
-                var archive = Path.Combine(work, asset.Key);
-                log("Downloading " + asset.Key);
-                Download(asset.Value, archive, progress);
+                var archive = Path.Combine(work, asset.Name);
+                log("Downloading " + asset.Name);
+                Download(asset.Url, archive, progress);
+                VerifyDownload(asset, archive, log);
 
                 log("Extracting");
                 var unpacked = Path.Combine(work, "unpacked");
-                ZipFile.ExtractToDirectory(archive, unpacked);
+                ExtractArchive(asset, archive, unpacked);
 
                 log("Installing into " + CliRoot);
                 Directory.CreateDirectory(CliRoot);
@@ -2069,20 +2103,21 @@ namespace SpicetifyUpdater
             var themeDir = Path.Combine(userdata, "Themes", "marketplace");
 
             var release = LatestRelease(MarketRepo, true);
-            var asset = release.Assets.FirstOrDefault(a => a.Key.Equals("marketplace.zip", StringComparison.OrdinalIgnoreCase));
-            if (asset.Key == null) asset = release.Assets.FirstOrDefault();
-            if (asset.Key == null) throw new InvalidOperationException("No marketplace build in the latest release");
+            var asset = release.Assets.FirstOrDefault(a => a.Name.Equals("marketplace.zip", StringComparison.OrdinalIgnoreCase));
+            if (asset == null) asset = release.Assets.FirstOrDefault();
+            if (asset == null) throw new InvalidOperationException("No marketplace build in the latest release");
 
             var work = TempDir("spicetify-marketplace-");
             try
             {
                 var archive = Path.Combine(work, "marketplace.zip");
-                log("Downloading " + asset.Key);
-                Download(asset.Value, archive, progress);
+                log("Downloading " + asset.Name);
+                Download(asset.Url, archive, progress);
+                VerifyDownload(asset, archive, log);
 
                 log("Extracting");
                 var unpacked = Path.Combine(work, "unpacked");
-                ZipFile.ExtractToDirectory(archive, unpacked);
+                ExtractArchive(asset, archive, unpacked);
 
                 var manifest = Directory.GetFiles(unpacked, "manifest.json", SearchOption.AllDirectories).FirstOrDefault();
                 if (manifest == null) throw new InvalidOperationException("marketplace.zip did not contain a manifest.json");
@@ -2154,22 +2189,23 @@ namespace SpicetifyUpdater
             // The setup is preferred: it also refreshes the shortcuts and uninstaller
             // of an installed copy instead of leaving an orphaned exe behind.
             var setup = release.Assets.FirstOrDefault(a =>
-                a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
-                a.Key.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0);
+                a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                a.Name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0);
             var portable = release.Assets.FirstOrDefault(a =>
-                a.Key.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
-                a.Key.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) < 0);
-            var asset = setup.Key != null ? setup : portable;
-            if (asset.Key == null)
+                a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                a.Name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) < 0);
+            var asset = setup ?? portable;
+            if (asset == null)
                 throw new InvalidOperationException("Release v" + release.Tag + " has no downloadable exe");
 
-            var download = Path.Combine(Path.GetTempPath(), asset.Key);
-            log("Downloading " + asset.Key);
-            Download(asset.Value, download, progress);
+            var download = Path.Combine(Path.GetTempPath(), asset.Name);
+            log("Downloading " + asset.Name);
+            Download(asset.Url, download, progress);
+            VerifyDownload(asset, download, log);
 
             var current = Process.GetCurrentProcess().MainModule.FileName;
 
-            if (setup.Key != null)
+            if (setup != null)
             {
                 // The app closes as soon as this returns, so the setup can replace the
                 // installed copy; it then starts the new version on its own.
@@ -2286,6 +2322,74 @@ namespace SpicetifyUpdater
         private static string Relative(string path, string root)
         {
             return path.Substring(root.TrimEnd('\\').Length).TrimStart('\\');
+        }
+
+        /* ------------------------------------------------------------ downloads */
+
+        // GitHub publishes a size for every asset and a sha256 digest for those uploaded
+        // with one. A file that does not match is a truncated or tampered transfer, and
+        // extracting it would install a broken Spicetify, so nothing is touched.
+        private static void VerifyDownload(Asset asset, string path, Action<string> log)
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length == 0)
+                throw Damaged(asset, "the file is empty");
+
+            if (asset.Size > 0 && file.Length != asset.Size)
+                throw Damaged(asset, "the download is " + file.Length.ToString("N0", CultureInfo.InvariantCulture) +
+                    " bytes but the release lists " + asset.Size.ToString("N0", CultureInfo.InvariantCulture) + " bytes");
+
+            var expected = Sha256FromDigest(asset.Digest);
+            if (expected == null)
+            {
+                log("Checked the size of " + asset.Name);
+                return;
+            }
+
+            if (!string.Equals(Sha256(path), expected, StringComparison.OrdinalIgnoreCase))
+                throw Damaged(asset, "its checksum does not match the published one");
+
+            log("Checked " + asset.Name + " against the release checksum");
+        }
+
+        private static InvalidOperationException Damaged(Asset asset, string detail)
+        {
+            return new InvalidOperationException(
+                "Nothing was installed because " + asset.Name + " did not match the release: " + detail + ". Try again.");
+        }
+
+        private static void ExtractArchive(Asset asset, string archive, string destination)
+        {
+            try
+            {
+                ZipFile.ExtractToDirectory(archive, destination);
+            }
+            catch (InvalidDataException)
+            {
+                throw Damaged(asset, "the archive cannot be read as a zip file");
+            }
+        }
+
+        private static string Sha256(string path)
+        {
+            using (var hash = System.Security.Cryptography.SHA256.Create())
+            using (var stream = File.OpenRead(path))
+                return BitConverter.ToString(hash.ComputeHash(stream)).Replace("-", "");
+        }
+
+        // GitHub writes digests as "sha256:<hex>"; anything else is ignored rather than
+        // guessed at, and the size check still runs.
+        private static string Sha256FromDigest(string digest)
+        {
+            if (string.IsNullOrEmpty(digest)) return null;
+
+            var text = digest.Trim();
+            var colon = text.IndexOf(':');
+            if (colon <= 0) return null;
+            if (!text.Substring(0, colon).Equals("sha256", StringComparison.OrdinalIgnoreCase)) return null;
+
+            var hex = text.Substring(colon + 1).Trim();
+            return hex.Length == 64 ? hex : null;
         }
 
         private static void Download(string url, string destination, Action<double> progress)
