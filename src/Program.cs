@@ -1372,15 +1372,9 @@ namespace SpicetifyUpdater
         private static readonly Dictionary<string, DateTime> TagCacheTime = new Dictionary<string, DateTime>();
         private static readonly Dictionary<string, string> RawTagCache = new Dictionary<string, string>();
 
-        // What the last successful lookup returned, plus its ETag, so the next check
-        // can ask "still the same?" instead of downloading the release again.
-        private sealed class CachedRelease
-        {
-            public string ETag;
-            public Release Release;
-        }
-
-        private static readonly Dictionary<string, CachedRelease> DiskReleaseCache = new Dictionary<string, CachedRelease>();
+        // The asset list of the last successful API lookup, kept on disk so an install can
+        // still verify sizes and digests when GitHub's API is unavailable.
+        private static readonly Dictionary<string, Release> DiskReleaseCache = new Dictionary<string, Release>();
         private static bool _diskCacheLoaded;
 
         public static string CliRoot
@@ -1555,38 +1549,36 @@ namespace SpicetifyUpdater
             }
 
             LoadReleaseCache();
-            CachedRelease cached;
+            Release cached;
             DiskReleaseCache.TryGetValue(repo, out cached);
 
-            using (var client = new HttpClient())
+            try
             {
-                client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
-                client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
-
-                var request = new HttpRequestMessage(
-                    HttpMethod.Get, "https://api.github.com/repos/" + repo + "/releases/latest");
-                if (cached != null && !string.IsNullOrEmpty(cached.ETag))
-                    request.Headers.TryAddWithoutValidation("If-None-Match", cached.ETag);
-
-                using (var response = await client.SendAsync(request))
+                using (var client = new HttpClient())
                 {
-                    // GitHub charges the hourly limit for a 304 too, so this only saves
-                    // bandwidth; version checks go through LatestTag so they cost nothing.
-                    if (response.StatusCode == HttpStatusCode.NotModified && cached != null)
-                    {
-                        ReleaseCache[repo] = cached.Release;
-                        ReleaseCacheTime[repo] = DateTime.Now;
-                        return cached.Release;
-                    }
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+                    client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
 
-                    response.EnsureSuccessStatusCode();
-
-                    var release = ParseRelease(await response.Content.ReadAsStringAsync());
-                    SaveReleaseCache(repo, response.Headers.ETag != null ? response.Headers.ETag.Tag : null, release);
+                    var release = ParseRelease(await client.GetStringAsync(
+                        "https://api.github.com/repos/" + repo + "/releases/latest"));
+                    SaveReleaseCache(repo, release);
                     ReleaseCache[repo] = release;
                     ReleaseCacheTime[repo] = DateTime.Now;
                     return release;
                 }
+            }
+            catch (Exception)
+            {
+                // The API is a fallback for the release page here, so a stored asset list
+                // (sizes and digests included) beats failing while GitHub is limited.
+                if (cached != null)
+                {
+                    ReleaseCache[repo] = cached;
+                    ReleaseCacheTime[repo] = DateTime.Now;
+                    return cached;
+                }
+
+                throw;
             }
         }
 
@@ -1664,8 +1656,7 @@ namespace SpicetifyUpdater
                         }
                     }
 
-                    var etag = item.ContainsKey("etag") ? Convert.ToString(item["etag"]) : null;
-                    DiskReleaseCache[entry.Key] = new CachedRelease { ETag = etag, Release = release };
+                    DiskReleaseCache[entry.Key] = release;
                 }
             }
             catch
@@ -1675,9 +1666,9 @@ namespace SpicetifyUpdater
             }
         }
 
-        private static void SaveReleaseCache(string repo, string etag, Release release)
+        private static void SaveReleaseCache(string repo, Release release)
         {
-            DiskReleaseCache[repo] = new CachedRelease { ETag = etag, Release = release };
+            DiskReleaseCache[repo] = release;
 
             try
             {
@@ -1685,13 +1676,12 @@ namespace SpicetifyUpdater
                 foreach (var entry in DiskReleaseCache)
                 {
                     var assets = new List<object>();
-                    foreach (var asset in entry.Value.Release.Assets)
+                    foreach (var asset in entry.Value.Assets)
                         assets.Add(new object[] { asset.Name, asset.Url, asset.Size, asset.Digest });
 
                     data[entry.Key] = new Dictionary<string, object>
                     {
-                        { "etag", entry.Value.ETag },
-                        { "tag", entry.Value.Release.Tag },
+                        { "tag", entry.Value.Tag },
                         { "assets", assets.ToArray() }
                     };
                 }
