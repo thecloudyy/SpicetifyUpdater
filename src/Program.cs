@@ -1449,8 +1449,8 @@ namespace SpicetifyUpdater
         }
 
         // github.com/<repo>/releases/expanded_assets/<tag> lists a release's files as plain
-        // links, and a HEAD request gives their exact size, so an install needs no API quota.
-        private static Asset AssetFromPage(string repo, string tag, Func<string, bool> match)
+        // links, so an install needs no API quota to find them.
+        private static List<Asset> PageFiles(string repo, string tag)
         {
             EnsureTls();
 
@@ -1459,19 +1459,101 @@ namespace SpicetifyUpdater
             var html = DownloadText(page);
             if (html == null) return null;
 
+            var files = new List<Asset>();
             var pattern = "href=\"(/" + Regex.Escape(repo) + "/releases/download/" +
                           Regex.Escape(Uri.EscapeDataString(rawTag)) + "/([^\"/]+))\"";
             foreach (Match found in Regex.Matches(html, pattern))
             {
-                var name = Uri.UnescapeDataString(found.Groups[2].Value);
-                if (!match(name)) continue;
+                files.Add(new Asset
+                {
+                    Name = Uri.UnescapeDataString(found.Groups[2].Value),
+                    Url = "https://github.com" + found.Groups[1].Value
+                });
+            }
 
-                var asset = new Asset { Name = name, Url = "https://github.com" + found.Groups[1].Value };
-                asset.Size = RemoteSize(asset.Url);
-                return asset;
+            return files.Count == 0 ? null : files;
+        }
+
+        private static Asset AssetFromPage(string repo, string tag, Func<string, bool> match)
+        {
+            var files = PageFiles(repo, tag);
+            if (files == null) return null;
+
+            var asset = files.FirstOrDefault(a => match(a.Name));
+            if (asset == null) return null;
+
+            asset.Size = RemoteSize(asset.Url);
+            AttachChecksum(files, asset);
+            return asset;
+        }
+
+        private static bool LooksLikeChecksums(string name)
+        {
+            var lower = (name ?? "").ToLowerInvariant();
+            return lower.Contains("sha256") || lower.Contains("checksum");
+        }
+
+        // A release that ships a checksum file lets a page-discovered download be verified by
+        // sha256 instead of only by its exact size; a release without one just keeps the size.
+        private static void AttachChecksum(List<Asset> files, Asset asset)
+        {
+            if (asset == null || Sha256FromDigest(asset.Digest) != null) return;
+
+            foreach (var file in files ?? new List<Asset>())
+            {
+                if (!LooksLikeChecksums(file.Name)) continue;
+
+                var digest = FindDigest(DownloadText(file.Url), asset.Name);
+                if (digest == null) continue;
+
+                asset.Digest = "sha256:" + digest;
+                return;
+            }
+        }
+
+        private static string FindDigest(string text, string assetName)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+
+            foreach (var raw in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var line = raw.Trim();
+
+                // coreutils: "<64 hex>  <name>", sometimes "<64 hex> *<name>".
+                if (line.Length > 64)
+                {
+                    var hex = line.Substring(0, 64);
+                    if (IsSha256Hex(hex))
+                    {
+                        var name = line.Substring(64).TrimStart(' ', '\t', '*').Trim();
+                        if (name.Equals(assetName, StringComparison.OrdinalIgnoreCase) ||
+                            name.EndsWith("/" + assetName, StringComparison.OrdinalIgnoreCase))
+                            return hex.ToLowerInvariant();
+                    }
+                }
+
+                // BSD style: "SHA256 (name) = <64 hex>".
+                var open = line.IndexOf('(');
+                var close = open < 0 ? -1 : line.IndexOf(')', open);
+                var equals = line.LastIndexOf('=');
+                if (open > 0 && close > open && equals > close)
+                {
+                    var name = line.Substring(open + 1, close - open - 1).TrimStart('*').Trim();
+                    var hex = line.Substring(equals + 1).Trim();
+                    if (name.Equals(assetName, StringComparison.OrdinalIgnoreCase) && IsSha256Hex(hex))
+                        return hex.ToLowerInvariant();
+                }
             }
 
             return null;
+        }
+
+        private static bool IsSha256Hex(string value)
+        {
+            if (value == null || value.Length != 64) return false;
+            foreach (var c in value)
+                if (!Uri.IsHexDigit(c)) return false;
+            return true;
         }
 
         // The release page first (no quota), the API second (it also carries the digest).
@@ -1484,7 +1566,12 @@ namespace SpicetifyUpdater
             if (!string.Equals(release.Tag, tag, StringComparison.OrdinalIgnoreCase)) return null;
 
             foreach (var asset in release.Assets)
-                if (match(asset.Name)) return asset;
+            {
+                if (!match(asset.Name)) continue;
+
+                AttachChecksum(PageFiles(repo, tag), asset);
+                return asset;
+            }
 
             return null;
         }
@@ -1497,7 +1584,10 @@ namespace SpicetifyUpdater
 
             var size = RemoteSize(url);
             if (size <= 0) return null;
-            return new Asset { Name = name, Url = url, Size = size };
+
+            var asset = new Asset { Name = name, Url = url, Size = size };
+            AttachChecksum(PageFiles(SelfRepo, tag), asset);
+            return asset;
         }
 
         private static string DownloadText(string url)

@@ -39,7 +39,9 @@ instead; if the folder is not writable it says so instead of leaving a half-writ
 - **Maintenance** — Backup & Apply, Apply, and Restore.
 - **Checked downloads** — every archive is compared with the release's published size and sha256
   before anything is extracted, so a truncated or tampered download stops with a message instead of
-  a broken install.
+  a broken install. Each release here ships a `SHA256SUMS.txt` next to its files, which the app
+  reads from the release page (so the name and hash checks need no API requests). Releases are
+  stamped with `python scripts/add_checksums.py [tag]` after their files are uploaded.
 - **Update checks** — the latest tag comes from GitHub's `releases/latest` redirect, and the
   files to download come from the release page plus a `HEAD` for their size, so checking and
   installing both cost 0 of the 60 hourly requests. The API is only used if a release page
