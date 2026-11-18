@@ -120,6 +120,9 @@ function Assert-Assets($release, [hashtable]$expected) {
     Write-Host "  ok    $($expected.Count) assets uploaded with the expected sizes"
 }
 
+$bumped = $false
+$committed = $false
+
 Push-Location $root
 try {
     Step 'preconditions'
@@ -158,6 +161,7 @@ try {
     Set-Setting $project '<AssemblyVersion>[^<]+</AssemblyVersion>' "<AssemblyVersion>$Version.0</AssemblyVersion>"
     Set-Setting $project '<FileVersion>[^<]+</FileVersion>' "<FileVersion>$Version.0</FileVersion>"
     Set-Setting (Join-Path $root 'installer.iss') '#define MyAppVersion "[^"]+"' "#define MyAppVersion ""$Version"""
+    $bumped = $true
     Write-Host "  ok    csproj and installer.iss now say $Version"
 
     Step 'build'
@@ -195,8 +199,7 @@ try {
 
     if ($DryRun) {
         Step 'dry run'
-        git checkout -- SpicetifyUpdater.csproj installer.iss
-        Write-Host '  version files restored, nothing committed or published'
+        Write-Host '  nothing committed or published'
         exit 0
     }
 
@@ -204,17 +207,33 @@ try {
 
     if ($DraftOnly) {
         Step 'draft check'
-        $release = New-Draft $headers (git rev-parse HEAD).Trim()
+        $release = $null
+        $failed = $false
         try {
+            $release = New-Draft $headers (git rev-parse HEAD).Trim()
             Add-Assets $headers $release.id
             Assert-Assets (Read-Release $headers $release.id) $expected
             Write-Host '  ok    a draft release and its uploads work'
         }
-        finally {
-            Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
-            git checkout -- SpicetifyUpdater.csproj installer.iss
-            Write-Host '  draft deleted, version files restored, nothing published'
+        catch {
+            $failed = $true
+            Write-Host "  FAIL  $($_.Exception.Message)"
+            Write-Host ''
+            Write-Host 'RELEASE ABORTED'
         }
+        finally {
+            # A draft that was never created cannot be deleted, and a failed creation must not
+            # hide the original error behind a second one.
+            if ($release) {
+                Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
+                Write-Host '  draft deleted, nothing published'
+            }
+            else {
+                Write-Host '  no draft was created, nothing published'
+            }
+        }
+
+        if ($failed) { exit 1 }
         exit 0
     }
 
@@ -222,6 +241,7 @@ try {
     git add SpicetifyUpdater.csproj installer.iss
     git commit -m "Release $Version" -m "Published by scripts/release.ps1."
     if ($LASTEXITCODE -ne 0) { Fail 'git commit failed' }
+    $committed = $true
     git push origin main
     if ($LASTEXITCODE -ne 0) { Fail 'git push failed' }
 
@@ -267,5 +287,12 @@ try {
     exit 0
 }
 finally {
+    # A bump that never became a commit must not leave the checkout dirty, or the retry this
+    # script promises is rejected by its own clean-tree check.
+    if ($bumped -and -not $committed) {
+        git checkout -- SpicetifyUpdater.csproj installer.iss
+        Write-Host '  version files restored'
+    }
+
     Pop-Location
 }
