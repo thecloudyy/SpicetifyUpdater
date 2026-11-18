@@ -83,6 +83,9 @@ parsing, download verification (size, sha256, empty and missing files), archive 
 cache-tag rule, then live lookups against GitHub plus a real download from a release, and finally
 `--selftest`. It exits non-zero on the first failure and needs no credentials.
 
+GitHub Actions runs the same script on `windows-latest` for every push and pull request, so a change
+that breaks the release lookup or download verification fails before a release is cut.
+
 ## Layout
 
 - `src/Program.cs` — the whole app: WPF UI, GitHub lookups, downloads, zip extraction and the
