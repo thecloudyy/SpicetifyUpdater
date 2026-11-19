@@ -112,7 +112,11 @@ retried, a client error must not be, and an upload whose response was lost must 
 That part is offline and adds about fifteen seconds. `scripts/resolve-probe.ps1` runs with it: it
 lifts the exe resolution out of `self-update-probe.ps1` and, against empty files in a temp directory,
 checks that an installed copy is preferred, that the built exe is used when nothing is installed,
-that `-Exe` wins, and that having neither is refused with both paths named. That is offline too.
+that `-Exe` wins, and that having neither is refused with both paths named. That is offline too, as
+is `scripts/publish-probe.ps1`: `release.ps1` takes `-ApiBase` and `-UploadBase`, so the probe can
+send its publish call to `scripts/publish-stub.py` and check that a public release is accepted while
+a rejected `PATCH` and a response that is still a draft are both reported as failures. Real releases
+never pass those switches, so they always talk to GitHub.
 
 For the self-update path there is a second probe, which needs an installed app rather than a fresh
 build, so it is not part of the run above:
@@ -157,7 +161,7 @@ that breaks the release lookup, download verification or upload retry fails befo
 - `scripts/` probes — `retry-probe.ps1` with `flaky-upload.py` (upload retries), `resolve-probe.ps1`
   (which exe `self-update-probe.ps1` picks), `self-update-probe.ps1` with `SelfUpdateProbe.cs` (the
   self-update path), `verify-release.ps1` (published assets against their checksums), `launch-check.ps1`
-  (the app starts cleanly)
+  (the app starts cleanly), `publish-probe.ps1` with `publish-stub.py` (the publish call)
 
 Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
 `--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the

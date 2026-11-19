@@ -35,9 +35,11 @@ try {
     }
     if (-not $ready) { throw "the local upload server did not start on port $port" }
 
-    Invoke-Expression $match.Value.Replace('https://uploads.github.com/repos/$repo', "$base/repos/x")
-
+    # Send-Asset builds its URL from the script-level $repo and $UploadBase, so supply both: the
+    # function is lifted on its own and would otherwise point at nothing.
     $repo = 'x'
+    $UploadBase = $base
+    Invoke-Expression $match.Value
     $headers = @{ Authorization = 'token test' }
     $landedName = $null
     function Read-Release($headers, [string]$id) {

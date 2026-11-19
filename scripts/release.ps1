@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Notes = '',
     [switch]$DryRun,
-    [switch]$DraftOnly
+    [switch]$DraftOnly,
+    [string]$ApiBase = 'https://api.github.com',
+    [string]$UploadBase = 'https://uploads.github.com'
 )
 
 # Publishes a release: bump, build, check, upload, publish.
@@ -20,6 +22,9 @@ param(
 # both are given.
 #
 # Needs a token with release access, from GH_TOKEN or a stored git credential for github.com.
+#
+# -ApiBase and -UploadBase exist so scripts/publish-probe.ps1 can send the publish call to a local
+# stand-in instead of GitHub. They default to the real hosts and no real release passes them.
 
 $ErrorActionPreference = 'Stop'
 
@@ -66,7 +71,7 @@ function Get-Iscc {
 }
 
 function Read-Release($headers, [string]$id) {
-    return Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$id" -Headers $headers
+    return Invoke-RestMethod -Uri "$ApiBase/repos/$repo/releases/$id" -Headers $headers
 }
 
 # Also lifted out of this file by scripts/verify-release.ps1, so that the post-publish check
@@ -81,7 +86,7 @@ function Get-Text($url, $headers) {
 }
 
 function New-Draft($headers, [string]$sha) {
-    return Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
+    return Invoke-RestMethod -Method Post -Uri "$ApiBase/repos/$repo/releases" `
         -Headers $headers -ContentType 'application/json' -Body (@{
             tag_name         = "v$Version"
             target_commitish = $sha
@@ -94,7 +99,7 @@ function New-Draft($headers, [string]$sha) {
 
 function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) {
     $name = [IO.Path]::GetFileName($path)
-    $url = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets" +
+    $url = "$UploadBase/repos/$repo/releases/$releaseId/assets" +
            "?name=$([Uri]::EscapeDataString($name))&label=$([Uri]::EscapeDataString($label))"
 
     # uploads.github.com drops a request now and then (408, 5xx, a closed connection). The file
@@ -122,6 +127,17 @@ function Send-Asset($headers, [int64]$releaseId, [string]$path, [string]$label) 
     }
 
     Write-Host ("  ok    uploaded {0} ({1:N0} bytes)" -f $asset.name, $asset.size)
+}
+
+# Lifted out of this file by scripts/publish-probe.ps1, so it must stand alone and take everything
+# it needs: this is the one call that makes a release public, and both a rejected PATCH and a
+# response that is still a draft have to come back as a failure.
+function Publish-Release($headers, [string]$apiBase, [string]$repo, [string]$id) {
+    $release = Invoke-RestMethod -Method Patch -Uri "$apiBase/repos/$repo/releases/$id" `
+        -Headers $headers -ContentType 'application/json' -Body (@{ draft = $false } | ConvertTo-Json)
+    if ($release.draft) { throw 'the release is still a draft' }
+
+    return $release
 }
 
 function Assert-Assets($release, [hashtable]$expected) {
@@ -258,9 +274,7 @@ try {
     }
 
     Step 'publish'
-    $published = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" `
-        -Headers $headers -ContentType 'application/json' -Body (@{ draft = $false } | ConvertTo-Json)
-    if ($published.draft) { throw 'the release is still a draft' }
+    $published = Publish-Release $headers $ApiBase $repo $release.id
     Write-Host "  ok    published $($published.html_url)"
 
     # Fetched anonymously from the release's download URLs, the way a user would, so this proves
@@ -286,7 +300,7 @@ finally {
     if ($release -and -not $published) {
         try {
             if ((Read-Release $headers $release.id).draft) {
-                Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
+                Invoke-RestMethod -Method Delete -Uri "$ApiBase/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
                 Write-Host '  draft deleted, nothing published'
             }
             else {
