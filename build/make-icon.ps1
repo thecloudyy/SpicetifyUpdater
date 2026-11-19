@@ -8,7 +8,27 @@ $source = Join-Path $PSScriptRoot "icon.png"
 $target = Join-Path $PSScriptRoot "icon.ico"
 $sizes = 16, 20, 24, 32, 40, 48, 64, 256
 
-$image = [System.Drawing.Image]::FromFile($source)
+$original = [System.Drawing.Image]::FromFile($source)
+
+# A small source (the current one is 48x48) goes blurry when bicubic stretches it to 64 or 256.
+# Frames larger than the source are drawn from a nearest-neighbor master instead: the source is
+# upscaled once by a whole factor to at least 1024px, so every source pixel becomes a sharp block,
+# and downsampling that keeps hard edges with at most one blended pixel. Frames at or below the
+# source size still come from the source itself, so the 48px frame is the source unchanged.
+$factor = [int][Math]::Ceiling(1024 / [Math]::Min($original.Width, $original.Height))
+if ($factor -lt 1) { $factor = 1 }
+$image = New-Object System.Drawing.Bitmap(($original.Width * $factor), ($original.Height * $factor), [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$graphics = [System.Drawing.Graphics]::FromImage($image)
+$graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
+# Half offset keeps nearest-neighbor from shifting the blocks by half a source pixel.
+$graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
+$graphics.Clear([System.Drawing.Color]::Transparent)
+$graphics.DrawImage($original, 0, 0, $image.Width, $image.Height)
+$graphics.Dispose()
+
+# Clamping the edges stops the downsampler from blending transparent border pixels inward.
+$edges = New-Object System.Drawing.Imaging.ImageAttributes
+$edges.SetWrapMode([System.Drawing.Drawing2D.WrapMode]::TileFlipXY)
 $frames = @()
 
 foreach ($size in $sizes) {
@@ -18,7 +38,8 @@ foreach ($size in $sizes) {
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
     $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
     $graphics.Clear([System.Drawing.Color]::Transparent)
-    $graphics.DrawImage($image, 0, 0, $size, $size)
+    $from = if ($size -gt $original.Width) { $image } else { $original }
+    $graphics.DrawImage($from, (New-Object System.Drawing.Rectangle(0, 0, $size, $size)), 0, 0, $from.Width, $from.Height, [System.Drawing.GraphicsUnit]::Pixel, $edges)
     $graphics.Dispose()
 
     if ($size -eq 64) { $bitmap.Save((Join-Path $PSScriptRoot "icon64.png"), [System.Drawing.Imaging.ImageFormat]::Png) }
@@ -61,6 +82,8 @@ foreach ($size in $sizes) {
     $stream.Dispose()
 }
 $image.Dispose()
+$original.Dispose()
+$edges.Dispose()
 
 $ico = New-Object System.IO.MemoryStream
 $writer = New-Object System.IO.BinaryWriter($ico)
