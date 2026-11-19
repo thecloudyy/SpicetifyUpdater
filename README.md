@@ -82,8 +82,9 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 1.0.2
 Bumps the three version fields, builds the exe and the installer, runs the checks, commits and
 pushes, then publishes through a draft: the portable exe, the setup and `SHA256SUMS.txt` are
 uploaded in that order (checksums last, so the file only ever describes attachments that already
-exist), the uploaded sizes are verified, and only then is the release published, after which the
-published checksum file is downloaded and compared. A failure before that last step removes the
+exist), the uploaded sizes are verified, and only then is the release published, after which
+`scripts/verify-release.ps1` fetches the published files the way a user would and checks them
+against `SHA256SUMS.txt`. A failure before that last step removes the
 draft it created and leaves no tag and nothing public; the version files are restored if the
 bump had not been committed yet, so the same command can simply be run again.
 
@@ -108,7 +109,10 @@ and finally `--selftest`. It exits non-zero on the first failure and needs no cr
 It also runs `scripts/retry-probe.ps1`, which points `release.ps1`'s upload retry loop at a local
 stand-in server (it needs python, like `scripts/add_checksums.py`): a transient failure must be
 retried, a client error must not be, and an upload whose response was lost must not be sent again.
-That part is offline and adds about fifteen seconds.
+That part is offline and adds about fifteen seconds. `scripts/resolve-probe.ps1` runs with it: it
+lifts the exe resolution out of `self-update-probe.ps1` and, against empty files in a temp directory,
+checks that an installed copy is preferred, that the built exe is used when nothing is installed,
+that `-Exe` wins, and that having neither is refused with both paths named. That is offline too.
 
 For the self-update path there is a second probe, which needs an installed app rather than a fresh
 build, so it is not part of the run above:
@@ -120,7 +124,9 @@ powershell -ExecutionPolicy Bypass -File scripts/self-update-probe.ps1 -Current
 It compiles `scripts/SelfUpdateProbe.cs` and drives the probed build's own self-update members — the
 status the window would show, the latest tag read from github.com, the setup asset and its checksum
 from `SHA256SUMS.txt`, a real download verified against it, and a one-byte-corrupted copy refused.
-It probes the installed app by default (or one passed with `-Exe`) and spends no API quota; without
+It probes the installed app, falls back to `bin\Release` when that is not installed, or uses one
+passed with `-Exe`, and spends no API quota (`-Installed` and `-Built` override the two candidates,
+so pointing `-Installed` at a path that does not exist exercises the fallback); without
 `-Current` it expects an update to be offered, with `-Current` it expects the app to be up to date,
 which is how an upgrade is shown to have closed the loop.
 
@@ -148,9 +154,10 @@ that breaks the release lookup, download verification or upload retry fails befo
 - `build/` — app icon
 - `scripts/` — `release.ps1` (cuts a release), `run-checks.ps1` and `Checks.cs` (the checks above),
   `add_checksums.py` (adds `SHA256SUMS.txt` to a release that predates the script)
-- `scripts/` probes — `retry-probe.ps1` with `flaky-upload.py` (upload retries),
-  `self-update-probe.ps1` with `SelfUpdateProbe.cs` (the self-update path), `verify-release.ps1`
-  (published assets against their checksums), `launch-check.ps1` (the app starts cleanly)
+- `scripts/` probes — `retry-probe.ps1` with `flaky-upload.py` (upload retries), `resolve-probe.ps1`
+  (which exe `self-update-probe.ps1` picks), `self-update-probe.ps1` with `SelfUpdateProbe.cs` (the
+  self-update path), `verify-release.ps1` (published assets against their checksums), `launch-check.ps1`
+  (the app starts cleanly)
 
 Three switches help without clicking around: `--selftest <path>` writes the detected status as JSON,
 `--selfupdate [logpath]` performs the app self-update and exits, and `--render <path.png>` draws the

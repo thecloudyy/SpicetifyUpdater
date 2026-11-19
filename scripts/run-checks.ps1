@@ -1,6 +1,6 @@
 # Builds Spicetify Updater, compiles scripts/Checks.cs against the built exe and runs it.
 # Also checks the two places the version lives, runs the app's own --selftest, and runs the
-# offline upload retry probe.
+# offline probes: upload retries and the probe's own exe resolution.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts/run-checks.ps1
 
@@ -79,6 +79,11 @@ try {
     Write-Host ''
     Write-Host '== upload retry probe (offline)'
     & (Join-Path $root 'scripts\retry-probe.ps1')
+    if ($LASTEXITCODE -ne 0) { $result = 1 }
+
+    Write-Host ''
+    Write-Host '== exe resolution probe (offline)'
+    & (Join-Path $root 'scripts\resolve-probe.ps1')
     if ($LASTEXITCODE -ne 0) { $result = 1 }
 
     Write-Host ''

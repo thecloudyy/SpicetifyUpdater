@@ -69,6 +69,8 @@ function Read-Release($headers, [string]$id) {
     return Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$id" -Headers $headers
 }
 
+# Also lifted out of this file by scripts/verify-release.ps1, so that the post-publish check
+# decodes a download exactly the way this script would (a byte[] response once broke it).
 function Get-Text($url, $headers) {
     $response = Invoke-WebRequest -Uri $url -Headers $headers -UseBasicParsing
 
@@ -261,14 +263,13 @@ try {
     if ($published.draft) { throw 'the release is still a draft' }
     Write-Host "  ok    published $($published.html_url)"
 
+    # Fetched anonymously from the release's download URLs, the way a user would, so this proves
+    # the published bytes and not just the API's idea of them. The release is public by now, so a
+    # failure here is reported rather than rolled back.
     Step 'verify published'
-    $live = Read-Release $headers "tags/v$Version"
-    Assert-Assets $live $expected
-    $checksumUrl = $live.assets | Where-Object { $_.name -eq $checksumName } |
-        Select-Object -ExpandProperty browser_download_url
-    $downloaded = Get-Text $checksumUrl $headers
-    if ($downloaded.Trim() -ne $checksumText.Trim()) { throw 'the published checksum file does not match the built files' }
-    Write-Host '  ok    published checksums match the uploaded files'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\verify-release.ps1') -Tag "v$Version"
+    if ($LASTEXITCODE -ne 0) { throw 'the published release does not verify from its download URLs' }
+    Write-Host '  ok    published release downloads match SHA256SUMS.txt'
 
     Step 'done'
     Write-Host "  v$Version is published: $($published.html_url)"
