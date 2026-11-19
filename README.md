@@ -115,8 +115,10 @@ checks that an installed copy is preferred, that the built exe is used when noth
 that `-Exe` wins, and that having neither is refused with both paths named. That is offline too, as
 is `scripts/publish-probe.ps1`: `release.ps1` takes `-ApiBase` and `-UploadBase`, so the probe can
 send its publish call to `scripts/publish-stub.py` and check that a public release is accepted while
-a rejected `PATCH` and a response that is still a draft are both reported as failures. Real releases
-never pass those switches, so they always talk to GitHub.
+a rejected `PATCH` and a response that is still a draft are both reported as failures. It also covers
+the cleanup: a lost response whose release did go public must be reported and left alone, while a
+draft that never went public must be deleted. Real releases never pass those switches, so they
+always talk to GitHub.
 
 For the self-update path there is a second probe, which needs an installed app rather than a fresh
 build, so it is not part of the run above:

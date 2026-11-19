@@ -140,6 +140,20 @@ function Publish-Release($headers, [string]$apiBase, [string]$repo, [string]$id)
     return $release
 }
 
+# Also lifted by scripts/publish-probe.ps1, so it must stand alone: a lost response from the
+# publish call can still have published the release, so look before deleting, and report a public
+# release instead of removing it.
+function Remove-Draft($headers, $release, [string]$apiBase, [string]$repo) {
+    $current = Invoke-RestMethod -Uri "$apiBase/repos/$repo/releases/$($release.id)" -Headers $headers
+    if (-not $current.draft) {
+        Write-Host "  the release is public: https://github.com/$repo/releases"
+        return
+    }
+
+    Invoke-RestMethod -Method Delete -Uri "$apiBase/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
+    Write-Host '  draft deleted, nothing published'
+}
+
 function Assert-Assets($release, [hashtable]$expected) {
     foreach ($name in $expected.Keys) {
         $asset = $release.assets | Where-Object { $_.name -eq $name }
@@ -298,18 +312,8 @@ finally {
     # A draft is safe to remove; a published release is not, and a lost response from the publish
     # call could have published it, so ask before deleting.
     if ($release -and -not $published) {
-        try {
-            if ((Read-Release $headers $release.id).draft) {
-                Invoke-RestMethod -Method Delete -Uri "$ApiBase/repos/$repo/releases/$($release.id)" -Headers $headers | Out-Null
-                Write-Host '  draft deleted, nothing published'
-            }
-            else {
-                Write-Host "  the release is public: https://github.com/$repo/releases"
-            }
-        }
-        catch {
-            Write-Host "  draft $($release.id) is still there: https://github.com/$repo/releases"
-        }
+        try { Remove-Draft $headers $release $ApiBase $repo }
+        catch { Write-Host "  draft $($release.id) is still there: https://github.com/$repo/releases" }
     }
 
     # A bump that never became a commit must not leave the checkout dirty, or the retry this
