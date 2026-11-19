@@ -92,7 +92,10 @@ bump had not been committed yet, so the same command can simply be run again.
 also uploads to a throwaway draft, verifies it and deletes it, which exercises the publish half
 without announcing anything.
 
-To regenerate `build\icon.ico` from `build\icon.png`, build a 256×256 ICO with a PNG payload.
+To regenerate `build\icon.ico` (and `build\icon64.png`) from `build\icon.png`, run
+`powershell -ExecutionPolicy Bypass -File build\make-icon.ps1`. It writes the full frame set
+(16/20/24/32/40/48/64/256); frames larger than the source are nearest-neighbor upscaled so the big
+sizes stay crisp.
 
 ## Checks
 
